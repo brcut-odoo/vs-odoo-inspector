@@ -39,6 +39,11 @@ export class ApprovalGate {
 	) {}
 
 	async approve(request: ApprovalRequest, ui: ApprovalUi, context: CallContext): Promise<GateOutcome> {
+		// No records means no values to share; nothing is recorded, so the
+		// columns are still asked about once there is data.
+		if (!request.write && request.rows.length === 0) {
+			return { approved: true, auto: true, columns: request.columns, withheld: [] };
+		}
 		if (!request.write && this.autoApproveKnown()) {
 			const known = this.store.classify(request.sessionId, ApprovalStore.scope(request.connection, request.model), request.columns);
 			if (known.undecided.length === 0) {

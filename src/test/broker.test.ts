@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { ApprovalBroker, ApprovalRequest, stableKey } from '../approval/broker';
 import { ApprovalStore } from '../approval/store';
+import { ApprovalGate } from '../tools/gate';
 
 function request(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
 	return {
@@ -94,5 +95,20 @@ suite('ApprovalBroker', () => {
 	test('stableKey ignores object key order but not array order', () => {
 		assert.equal(stableKey({ a: 1, b: { c: 2, d: 3 } }), stableKey({ b: { d: 3, c: 2 }, a: 1 }));
 		assert.notEqual(stableKey([1, 2]), stableKey([2, 1]));
+	});
+});
+
+suite('ApprovalGate', () => {
+	test('a read with no records is approved without asking', async () => {
+		const store = new ApprovalStore();
+		const gate = new ApprovalGate(new ApprovalBroker(store), store, () => true);
+		const context = {
+			signal: new AbortController().signal,
+			notify: async () => undefined,
+			elicitInput: async () => assert.fail('should not ask'),
+		};
+		const outcome = await gate.approve(request({ rows: [] }), 'elicitation', context);
+		assert.deepEqual([outcome.approved, outcome.auto, outcome.withheld], [true, true, []]);
+		assert.deepEqual(store.classify('s1', ApprovalStore.scope('prod', 'res.partner'), ['name']).undecided, ['name']);
 	});
 });

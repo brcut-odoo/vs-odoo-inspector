@@ -176,6 +176,9 @@ function summaryView(summary: ResultSummary): Node {
 	switch (summary.outcome) {
 		case 'approved':
 		case 'auto-approved': {
+			if (summary.outcome === 'auto-approved' && summary.rows === 0) {
+				return el('div', { class: 'summary ok' }, el('p', {}, 'No records found, so there was nothing to approve.'));
+			}
 			const sent = summary.columns?.length ?? 0;
 			const line = `${summary.outcome === 'auto-approved' ? 'Auto-approved (all columns approved earlier)' : 'Approved'}: ${summary.rows ?? 0} row${summary.rows === 1 ? '' : 's'} × ${sent} column${sent === 1 ? '' : 's'} sent to the model.`;
 			return el(
@@ -301,7 +304,7 @@ function formatValue(value: unknown, type: string): string {
 		return '';
 	}
 	if (typeof value === 'boolean') {
-		return value ? '✓' : '✗';
+		return value ? 'True' : 'False';
 	}
 	// many2one: [id, display name]
 	if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string') {

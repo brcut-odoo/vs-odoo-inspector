@@ -157,9 +157,14 @@ button:disabled {
 }
 
 button.primary {
-	background: var(--color-background-info, #1565c0);
-	border-color: transparent;
-	color: var(--color-text-inverse, white);
+	background: var(--info);
+	border-color: var(--info);
+	color: var(--bg);
+	font-weight: 600;
+}
+
+button.primary:not(:disabled):hover {
+	background: color-mix(in srgb, var(--info) 85%, var(--fg));
 }
 
 button.danger {
