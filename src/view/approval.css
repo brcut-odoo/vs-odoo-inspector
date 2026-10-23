@@ -1,0 +1,188 @@
+:root {
+	--bg: var(--color-background-primary, Canvas);
+	--bg-alt: var(--color-background-secondary, color-mix(in srgb, CanvasText 5%, Canvas));
+	--fg: var(--color-text-primary, CanvasText);
+	--fg-muted: var(--color-text-secondary, color-mix(in srgb, CanvasText 60%, Canvas));
+	--border: var(--color-border-primary, color-mix(in srgb, CanvasText 18%, Canvas));
+	--ok: var(--color-text-success, #2e7d32);
+	--bad: var(--color-text-danger, #c62828);
+	--info: var(--color-text-info, #1565c0);
+	--warn: var(--color-text-warning, #a15c00);
+	--radius: var(--border-radius-sm, 4px);
+	color-scheme: light dark;
+}
+
+body {
+	margin: 0;
+	padding: 8px;
+	font: var(--font-text-sm-size, 13px) / 1.4 var(--font-sans, system-ui, sans-serif);
+	color: var(--fg);
+	background: transparent;
+}
+
+p {
+	margin: 4px 0;
+}
+
+.muted {
+	color: var(--fg-muted);
+}
+
+.small {
+	font-size: 0.9em;
+}
+
+.mono {
+	font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.header .title {
+	font-size: 1.05em;
+}
+
+.request {
+	font-size: 0.9em;
+	color: var(--fg-muted);
+	word-break: break-word;
+}
+
+.table-wrap {
+	overflow: auto;
+	max-height: 360px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	margin: 6px 0;
+}
+
+table {
+	border-collapse: collapse;
+	width: max-content;
+	min-width: 100%;
+}
+
+th,
+td {
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+	text-align: left;
+	vertical-align: top;
+	max-width: 280px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+th {
+	position: sticky;
+	top: 0;
+	background: var(--bg-alt);
+	font-weight: 600;
+	z-index: 1;
+}
+
+th label {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	cursor: pointer;
+}
+
+th .tech {
+	font-weight: normal;
+	font-size: 0.8em;
+	color: var(--fg-muted);
+}
+
+/* Unticked: values stay visible so the user sees what they withhold. */
+th.off .name {
+	text-decoration: line-through;
+	color: var(--fg-muted);
+}
+
+td.off {
+	opacity: 0.4;
+}
+
+.badges {
+	display: flex;
+	gap: 3px;
+	margin-top: 2px;
+	min-height: 1em;
+}
+
+.badge {
+	font-size: 0.72em;
+	font-weight: normal;
+	padding: 0 4px;
+	border-radius: 3px;
+	border: 1px solid currentColor;
+}
+
+.badge.approved {
+	color: var(--ok);
+}
+
+.badge.denied {
+	color: var(--bad);
+}
+
+.badge.new {
+	color: var(--info);
+}
+
+.badge.filter {
+	color: var(--warn);
+}
+
+.actions {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+button {
+	font: inherit;
+	padding: 3px 10px;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+	background: var(--bg-alt);
+	color: var(--fg);
+	cursor: pointer;
+}
+
+button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+button.primary {
+	background: var(--color-background-info, #1565c0);
+	border-color: transparent;
+	color: var(--color-text-inverse, white);
+}
+
+button.danger {
+	color: var(--bad);
+}
+
+button.link {
+	border: none;
+	background: none;
+	padding: 0;
+	color: var(--info);
+	text-decoration: underline;
+}
+
+.summary.ok p:first-child {
+	color: var(--ok);
+}
+
+.summary.bad p:first-child,
+.error {
+	color: var(--bad);
+}
+
+.reset {
+	font-size: 0.9em;
+}

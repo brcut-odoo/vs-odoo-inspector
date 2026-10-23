@@ -1,139 +1,101 @@
 # VS Odoo Inspector
 
-Query an Odoo database from VS Code, with a table-based gate that lets you review and edit a request before it is sent — and see the results in the same table.
+Lets AI chat in VS Code query Odoo databases, while you decide exactly which columns and values reach the model.
 
-## What it does
+The extension runs an MCP server inside VS Code. When a tool reads Odoo data, the chat shows the real rows in a table **inside the conversation**, with a checkbox on every column. Only the columns you tick are returned to the model. Columns you approve stay approved for the rest of the chat session, so follow-up questions don't ask again.
 
-- **Talks to Odoo over JSON-RPC**, auto-detecting the API mode: `/json/2` with a Bearer API key on Odoo 18.5+, `/web/dataset/call_kw` with a session cookie below that.
-- **Exposes MCP tools** two ways: native VS Code language model tools, and a bundled stdio MCP server that works in any MCP client.
-- **Gates every query through the Query Workbench** — a webview table whose columns are the fields that would be returned. Click a column header to include or exclude that field from the request. Click Execute and the rows render in place.
+## How approval works
 
-## The Query Workbench
+1. The model calls a read tool, for example `odoo_search_read`.
+2. The extension fetches the records from Odoo and keeps them. Nothing goes to the model yet.
+3. The chat renders the approval view (an [MCP App](https://modelcontextprotocol.io/extensions/apps/overview)). It shows the rows, one checkbox per column, and badges:
 
-The workbench is both the request editor and the result viewer.
+   | Badge | Meaning |
+   |---|---|
+   | approved | You approved this column earlier in the chat |
+   | withheld before | You withheld it earlier; it starts unticked |
+   | new | Not decided yet |
+   | filter | The query filters, sorts or groups on it. Filtering can reveal values, so it needs approval even when it isn't returned |
 
-| Interaction | Effect |
-|---|---|
-| Click a column header | Toggles that field's inclusion in the request |
-| Hover a header, click the caret | Sorts by that column |
-| Approve / Execute | Sends the query built from the current column selection |
-| Cancel | Abandons the query; the tool reports the cancellation |
+4. **Approve selected**, **Approve all** or **Deny**. The tool call returns only the approved columns. The model is told the names of withheld columns, never their values.
+5. On later reads in the same chat session, if every column was already approved, the call goes through without asking. Withheld columns are still removed. Turn this off with `odooInspector.approval.autoApproveKnownColumns`.
 
-Disabled columns stay visible — dimmed, struck through, with blank cells — so re-enabling one is a single click.
+**Writes are always reviewed.** Writes are `odoo_execute_kw` with `create`, `write`, `unlink` or any non-read method. Stored approvals never cover them. For `create`/`write`, you can untick fields to remove them from the values before anything is sent. **Deny** sends no request to Odoo.
 
-### Preview
+Clients without MCP Apps but with elicitation get a form with one checkbox per column, with sample values in each description. Clients with neither get a refusal, because there's no way to ask you.
 
-Read-only queries are sampled before the table opens, so you see the real records while reviewing rather than approving a query blind. A banner marks the rows as a sample and the button reads **Approve** instead of **Execute**.
+### "Lifetime of the chat"
 
-- If you approve without changing anything, the existing sample is returned and no second request is made.
-- Editing the columns, sorting, or changing the query in **Advanced (JSON)** invalidates the sample; Approve then runs the query for real.
-- `odoo_call_method` is never previewed — its side effects are unknown, so it must not run before approval. Its approval table has no rows.
-- If the sample fails (for example on a protected field) the banner says so and the query remains reviewable.
-- The sample respects `odooInspector.maxRows`, so it never fetches more than the result table would show.
+Approvals are kept in memory per **MCP session**, and nothing is written to disk. VS Code may share one MCP session across several chats, so in practice approvals can outlive a single chat until the MCP server restarts or the window reloads. To clear them:
+
+- the **Reset approvals for this chat** link in the approval view;
+- **Odoo: Reset Column Approvals** (everything) or **Odoo: Manage Column Approvals** (per session; also the shield item in the status bar).
 
 ## Setup
 
-1. Add a connection in Settings under `odooInspector.connections`:
+1. **Odoo: Add Connection** asks for the URL, database, login, credential kind, protocol, a name, and then the secret.
+2. In Chat (agent mode), enable the **Odoo Inspector** MCP server in the tools picker.
+3. Ask something like *"Which 5 customers have the largest open invoices?"*
 
-   ```json
-   {
-     "odooInspector.connections": [
-       {
-         "name": "local",
-         "url": "http://localhost:8069",
-         "db": "my_database",
-         "login": "admin",
-         "authMode": "auto"
-       }
-     ]
-   }
-   ```
+Credentials are stored in the OS keychain (VS Code `SecretStorage`), never in settings.
 
-2. Run **Odoo: Set Credentials** and paste an API key (recommended), a `session_id`, or a password. Credentials go to the OS keychain via `SecretStorage`, never to settings.
+## Authentication and protocols
 
-3. Run **Odoo: Connect to Database**, or just invoke a tool — it connects on demand.
+| | `jsonrpc` (`/jsonrpc`) | `xmlrpc` (`/xmlrpc/2`) | `callKw` (`/web/dataset/call_kw`) | `json2` (`/json/2`) |
+|---|---|---|---|---|
+| **Password** | ✓ | ✓ | ✓ (exchanged for a session) | — |
+| **API key** | ✓ | ✓ | — (Odoo refuses API keys for web sessions) | ✓ (Odoo 18.5+) |
+| **Session token** | — | — | ✓ | — |
 
-## Authentication
+With `protocol: auto`:
+- a session token uses `callKw`;
+- an API key uses `json2` on Odoo 18.5+ and `jsonrpc` below that;
+- a password uses `jsonrpc`.
 
-| Auth mode | API mode | Notes |
-|---|---|---|
-| `apiKey` | `/json/2` (18.5+) | `Authorization: Bearer <key>` + `X-Odoo-Database` |
-| `apiKey` | `call_kw` (< 18.5) | The key is exchanged for a session via `/web/session/authenticate` |
-| `session` | `call_kw` | `session_id` cookie; `/json/2` rejects cookies |
-| `password` | `call_kw` | The password is exchanged for a session; `/json/2` only accepts API keys |
+A combination that can't work fails at once with an explanation.
 
-`auto` picks the mode from the credential's shape:
-
-| Credential | Detected as | Why |
-|---|---|---|
-| 40 lowercase hex characters | `apiKey` | Odoo generates 20 random bytes hexlified (`API_KEY_SIZE`) |
-| 42 url-safe characters | `session` | werkzeug session ids are 42 characters (`STORED_SESSION_BYTES`) |
-| anything else | `password` | Exchanged for a session on connect |
-
-Set `authMode` explicitly when the shape is ambiguous — a 40-character password that happens to be hexadecimal would be read as an API key.
-
-### Password auth
-
-Passwords work, with two caveats:
-
-- **Two-factor authentication blocks it.** Odoo refuses to open an RPC session for a user with TOTP enabled and returns `uid: null`; the extension reports this and suggests an API key. Use `apiKey` for such users.
-- **Prefer API keys.** They are revocable and scoped. A password in the keychain is a full login credential.
-
-Password mode always uses `call_kw`, so it loses `/json/2` on Odoo 18.5+.
+- **Users with two-factor authentication** can't use a password over RPC. Use an API key, or a session token copied from a logged-in browser (the `session_id` cookie).
+- **Session tokens expire.** When Odoo rejects one, you're asked once for a new credential.
+- `/jsonrpc` and `/xmlrpc/2` are deprecated from Odoo 19. Prefer an API key with `json2` where available.
 
 ## Tools
 
-| Tool | Read-only | Purpose |
-|---|---|---|
-| `odoo_list_models` | yes | List models, optionally filtered |
-| `odoo_get_fields` | yes | Field metadata for a model |
-| `odoo_search_read` | yes | Search and return records |
-| `odoo_read_records` | yes | Read records by id |
-| `odoo_count_records` | yes | Count matching records |
-| `odoo_call_method` | no | Call any public method — **disabled by default** |
+| Tool | Gate |
+|---|---|
+| `odoo_list_models`, `odoo_get_fields` | none (metadata only) |
+| `odoo_search_read`, `odoo_read`, `odoo_read_group` | column approval |
+| `odoo_execute_kw` | read methods: column approval. Everything else: always reviewed before sending. **Off** unless `odooInspector.enableExecuteKw` is set. |
+| `odoo_approval_preview`, `odoo_approval_decide`, `odoo_approval_reset` | app-only: called by the approval view, hidden from the model |
 
-`odoo_call_method` is effectively unrestricted database access. Enable it only via `odooInspector.enableArbitraryMethodCalls`.
+When the model asks for no fields, a default set of up to 12 useful stored fields is fetched. Binary, HTML and x2many fields are skipped.
 
 ## Settings
 
-| Setting | Default | Purpose |
+| Setting | Default | |
 |---|---|---|
-| `odooInspector.connections` | `[]` | Connection list |
-| `odooInspector.activeConnection` | `""` | Default connection |
-| `odooInspector.rateLimitPerSecond` | `1` | Request throttle; raise only for local DBs |
-| `odooInspector.maxRows` | `200` | Rows returned to the language model |
-| `odooInspector.queryGate` | `always` | `always` / `writes-only` / `never` |
-| `odooInspector.enableArbitraryMethodCalls` | `false` | Enables `odoo_call_method` |
-
-## MCP server
-
-The extension registers a stdio MCP server (`dist/mcpServer.js`) via `contributes.mcpServerDefinitionProviders`. It appears under **MCP: List Servers** and in the tools picker.
-
-Because the server is a separate process with no editor access, its gate is two-phase: the first call returns the proposed query and a token, and `odoo_confirm_query` executes it.
+| `odooInspector.connections` | `[]` | Managed by **Add Connection** |
+| `odooInspector.activeConnection` | `""` | Used when a tool names no connection |
+| `odooInspector.rateLimitPerSecond` | `1` | Odoo SaaS throttles hard; 0 disables |
+| `odooInspector.maxRows` | `200` | Most rows a read returns |
+| `odooInspector.approval.previewRows` | `50` | Rows shown in the approval table |
+| `odooInspector.approval.autoApproveKnownColumns` | `true` | Skip the view when every column is already approved |
+| `odooInspector.enableExecuteKw` | `false` | Expose `odoo_execute_kw` |
 
 ## Development
 
-```bash
-npm install
-npm run compile      # type-check + lint + bundle all three entry points
-npm run watch        # incremental rebuild
-npm run test:unit    # pure-logic tests (no VS Code host needed)
-npm test             # full extension tests (requires a runnable VS Code)
+```sh
+pnpm install
+pnpm run compile        # type-check + bundle (extension + inlined view)
+pnpm test               # unit tests
+pnpm run check:view     # drives the approval view in headless Chrome (CHROME=/path/to/chrome)
 ```
 
-Three bundles are produced:
+Against a real Odoo:
 
-| Entry | Output | Target |
-|---|---|---|
-| `src/extension.ts` | `dist/extension.js` | Node (extension host) |
-| `src/mcpServer.ts` | `dist/mcpServer.js` | Node (stdio MCP server) |
-| `src/ui/workbench/main.ts` | `dist/webview/workbench.js` | Browser (webview) |
+```sh
+export ODOO_IT_URL=http://127.0.0.1:8069 ODOO_IT_DB=mydb ODOO_IT_LOGIN=admin ODOO_IT_PASSWORD=admin ODOO_IT_API_KEY=…
+pnpm run test:integration   # every auth × protocol pair
+pnpm run e2e                # full approval flow through a real MCP client
+```
 
-Press `F5` to launch the Extension Development Host.
-
-## Known limitations
-
-- Read-only by default; write tools are not exposed.
-- No webview virtualization yet — very large result sets render slowly.
-- Single connection at a time.
-- `npm test` cannot run on NixOS without a patched VS Code binary; use `npm run test:unit`.
+Press F5 to start an Extension Development Host. **Odoo: Show Output** logs every connection, approval and decision.

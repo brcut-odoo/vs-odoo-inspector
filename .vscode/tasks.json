@@ -1,84 +1,14 @@
-// See https://go.microsoft.com/fwlink/?LinkId=733558
-// for the documentation about the tasks.json format
 {
 	"version": "2.0.0",
 	"tasks": [
 		{
-            "label": "watch",
-            "dependsOn": [
-                "npm: watch:tsc",
-                "npm: watch:esbuild"
-            ],
-            "presentation": {
-                "reveal": "never"
-            },
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        },
-        {
-            "type": "npm",
-            "script": "watch:esbuild",
-            "group": "build",
-            // Inlined instead of referencing "$esbuild-watch", which is
-            // contributed by the connor4312.esbuild-problem-matchers
-            // extension. Patterns match esbuild.js's plugin output.
-            "problemMatcher": {
-                "owner": "esbuild",
-                "source": "esbuild",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^✘ \\[ERROR\\] (.*?):(\\d+):(\\d+): (.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "message": 4
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "^\\[watch\\] build started$",
-                    "endsPattern": "^\\[watch\\] build finished$"
-                }
-            },
-            "isBackground": true,
-            "label": "npm: watch:esbuild",
-            "presentation": {
-                "group": "watch",
-                "reveal": "never"
-            }
-        },
-		{
-            "type": "npm",
-            "script": "watch:tsc",
-            "group": "build",
-            "problemMatcher": "$tsc-watch",
-            "isBackground": true,
-            "label": "npm: watch:tsc",
-            "presentation": {
-                "group": "watch",
-                "reveal": "never"
-            }
-        },
-		{
-			"type": "npm",
-			"script": "watch-tests",
-			"label": "npm: watch-tests",
-			"problemMatcher": "$tsc-watch",
-			"isBackground": true,
-			"presentation": {
-				"reveal": "never",
-				"group": "watchers"
-			},
-			"group": "build"
-		},
-		{
-			"label": "tasks: watch-tests",
-			"dependsOn": [
-				"watch",
-				"npm: watch-tests"
-			],
-			"problemMatcher": []
+			"label": "build",
+			"type": "shell",
+			// Tasks don't inherit the Nix dev environment, so take node and pnpm from shell.nix.
+			"command": "nix-shell",
+			"args": ["--run", "pnpm run build"],
+			"problemMatcher": "$esbuild",
+			"group": { "kind": "build", "isDefault": true }
 		}
 	]
 }

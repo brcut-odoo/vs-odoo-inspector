@@ -1,41 +1,60 @@
 {
   "name": "vs-odoo-inspector",
   "displayName": "VS Odoo Inspector",
-  "description": "Examine Odoo databases",
-  "version": "0.1.0",
+  "description": "Query Odoo databases from chat, approving every column before it reaches the model.",
+  "version": "0.2.0",
+  "publisher": "odoo",
+  "license": "UNLICENSED",
   "engines": {
-    "vscode": "^1.140.0"
+    "vscode": "^1.109.0"
   },
   "categories": [
+    "AI",
     "Other"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "odooInspector.mcp",
+        "label": "Odoo Inspector"
+      }
+    ],
     "commands": [
       {
-        "command": "odooInspector.connect",
-        "title": "Odoo: Connect to Database",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooInspector.disconnect",
-        "title": "Odoo: Disconnect",
+        "command": "odooInspector.addConnection",
+        "title": "Add Connection",
         "category": "Odoo"
       },
       {
         "command": "odooInspector.setCredentials",
-        "title": "Odoo: Set Credentials",
+        "title": "Set Credentials",
         "category": "Odoo"
       },
       {
-        "command": "odooInspector.openWorkbench",
-        "title": "Odoo: Open Query Workbench",
+        "command": "odooInspector.connect",
+        "title": "Connect",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.disconnect",
+        "title": "Disconnect",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.resetApprovals",
+        "title": "Reset Column Approvals",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.manageApprovals",
+        "title": "Manage Column Approvals",
         "category": "Odoo"
       },
       {
         "command": "odooInspector.showOutput",
-        "title": "Odoo: Show Output",
+        "title": "Show Output",
         "category": "Odoo"
       }
     ],
@@ -45,14 +64,19 @@
         "odooInspector.connections": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Odoo databases this extension can connect to. Credentials are stored separately in the OS keychain via **Odoo: Set Credentials**.",
+          "markdownDescription": "Odoo databases the tools can use. Add one with **Odoo: Add Connection**. Credentials are kept in the OS keychain, never here.",
           "items": {
             "type": "object",
-            "required": ["name", "url", "db", "login"],
+            "required": [
+              "name",
+              "url",
+              "db",
+              "login"
+            ],
             "properties": {
               "name": {
                 "type": "string",
-                "description": "A unique label for this connection."
+                "description": "Unique label, used as the tools' `connection` argument."
               },
               "url": {
                 "type": "string",
@@ -60,17 +84,34 @@
               },
               "db": {
                 "type": "string",
-                "description": "Technical database name."
+                "description": "Database name."
               },
               "login": {
                 "type": "string",
-                "description": "Login of the user the credentials belong to."
+                "description": "Login of the user the credential belongs to."
               },
-              "authMode": {
+              "authMethod": {
                 "type": "string",
-                "enum": ["auto", "apiKey", "session", "password"],
+                "enum": [
+                  "auto",
+                  "apiKey",
+                  "password",
+                  "session"
+                ],
                 "default": "auto",
-                "markdownDescription": "How to authenticate. `auto` treats long credentials as API keys. `password` exchanges the user's password for a session and always uses the `call_kw` API; it does not work for users with two-factor authentication enabled."
+                "markdownDescription": "Credential kind. `auto` guesses from its shape (40 hex characters: API key; 42+ url-safe characters: session id; otherwise password)."
+              },
+              "protocol": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "jsonrpc",
+                  "xmlrpc",
+                  "callKw",
+                  "json2"
+                ],
+                "default": "auto",
+                "markdownDescription": "RPC protocol. `auto`: `json2` for API keys on Odoo 18.5+, `callKw` for session tokens, `jsonrpc` otherwise. API keys cannot use `callKw`; session tokens can only use `callKw`; `json2` only takes API keys."
               }
             }
           }
@@ -78,219 +119,66 @@
         "odooInspector.activeConnection": {
           "type": "string",
           "default": "",
-          "description": "Name of the connection to use by default."
+          "description": "Connection used when a tool call names none."
         },
         "odooInspector.rateLimitPerSecond": {
           "type": "number",
           "default": 1,
           "minimum": 0,
-          "description": "Maximum requests per second. Odoo SaaS instances throttle aggressively; raise this only for local databases."
+          "description": "Maximum Odoo requests per second (0 = unlimited). Odoo SaaS throttles aggressively."
         },
         "odooInspector.maxRows": {
           "type": "number",
           "default": 200,
           "minimum": 1,
-          "description": "Maximum number of rows returned to the language model."
+          "description": "Maximum rows a read returns."
         },
-        "odooInspector.queryGate": {
-          "type": "string",
-          "enum": ["always", "writes-only", "never"],
-          "default": "always",
-          "markdownDescription": "When to open the Query Workbench so the user can review and edit a query before it is sent. `always` gates every tool call; `writes-only` gates only mutating calls; `never` runs queries immediately."
+        "odooInspector.approval.previewRows": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Rows shown in the in-chat approval table."
         },
-        "odooInspector.enableArbitraryMethodCalls": {
+        "odooInspector.approval.autoApproveKnownColumns": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Skip the approval when every column of a read was already approved in this chat session (withheld columns are still removed). Writes are always reviewed."
+        },
+        "odooInspector.enableExecuteKw": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Enables the `odoo_call_method` tool, which can invoke any public method on any model. This is effectively unrestricted access to the database."
+          "markdownDescription": "Expose `odoo_execute_kw`, which can call any method, including ones that change data. Every non-read call is reviewed before it is sent. Restart the MCP server after changing this."
         }
       }
-    },
-    "languageModelTools": [
-      {
-        "name": "odoo_list_models",
-        "displayName": "List Odoo Models",
-        "userDescription": "List the models available on the connected Odoo database.",
-        "modelDescription": "Lists the models available on the connected Odoo database, with their technical name and human label. Use this first when you do not know which model holds the data you need. Returns at most 500 models; filter with the 'filter' parameter to narrow the list.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooModels",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "filter": {
-              "type": "string",
-              "description": "Case-insensitive substring matched against the model name or label, e.g. 'sale' or 'invoice'."
-            }
-          }
-        }
-      },
-      {
-        "name": "odoo_get_fields",
-        "displayName": "Get Odoo Model Fields",
-        "userDescription": "Describe the fields of an Odoo model.",
-        "modelDescription": "Returns the field definitions of an Odoo model: technical name, label, type, whether it is stored, and for relational fields the target model. Always call this before building a domain or choosing fields, so you do not reference fields that do not exist.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooFields",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "model": {
-              "type": "string",
-              "description": "Technical model name, e.g. 'res.partner' or 'sale.order'."
-            },
-            "fields": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Optional subset of field names to describe. Omit to get all fields."
-            }
-          },
-          "required": ["model"]
-        }
-      },
-      {
-        "name": "odoo_search_read",
-        "displayName": "Search and Read Odoo Records",
-        "userDescription": "Search records on an Odoo model and return the requested fields.",
-        "modelDescription": "Searches records on an Odoo model and returns the requested fields. This is the main read tool. The user can review and edit the query — including which columns are returned — before it is sent, so propose a complete query rather than a minimal one. Domains use Odoo syntax: [[\"field\", \"operator\", value], ...] with operators such as =, !=, >, <, in, ilike, child_of. Prefix with '&', '|', '!' for boolean logic. Call odoo_get_fields first if you are unsure of field names.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooSearch",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "model": { "type": "string", "description": "Technical model name, e.g. 'res.partner'." },
-            "domain": {
-              "type": "array",
-              "description": "Odoo search domain. Omit or use [] to match all records.",
-              "items": {}
-            },
-            "fields": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Field names to return. Omit to let the user pick columns in the workbench."
-            },
-            "limit": { "type": "number", "description": "Maximum number of records. Defaults to 200." },
-            "offset": { "type": "number", "description": "Number of records to skip." },
-            "order": {
-              "type": "string",
-              "description": "Sort order, e.g. 'create_date desc' or 'name asc, id desc'."
-            },
-            "context": {
-              "type": "object",
-              "description": "Odoo context overrides, e.g. {\"lang\": \"en_US\", \"active_test\": false}."
-            }
-          },
-          "required": ["model"]
-        }
-      },
-      {
-        "name": "odoo_read_records",
-        "displayName": "Read Odoo Records by ID",
-        "userDescription": "Read specific Odoo records by their database ids.",
-        "modelDescription": "Reads specific records by their database ids. Use this when you already have ids from a previous search. Prefer odoo_search_read when you need to filter by field values.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooRead",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "model": { "type": "string", "description": "Technical model name." },
-            "ids": {
-              "type": "array",
-              "items": { "type": "number" },
-              "description": "Database ids of the records to read."
-            },
-            "fields": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Field names to return. Omit for all fields."
-            }
-          },
-          "required": ["model", "ids"]
-        }
-      },
-      {
-        "name": "odoo_count_records",
-        "displayName": "Count Odoo Records",
-        "userDescription": "Count the records matching a domain.",
-        "modelDescription": "Counts the records matching a domain, without fetching them. Use this to check how many records a query would return before reading them.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooCount",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "model": { "type": "string", "description": "Technical model name." },
-            "domain": {
-              "type": "array",
-              "description": "Odoo search domain. Omit or use [] to count all records.",
-              "items": {}
-            }
-          },
-          "required": ["model"]
-        }
-      },
-      {
-        "name": "odoo_call_method",
-        "displayName": "Call an Odoo Method",
-        "userDescription": "Call an arbitrary method on an Odoo model. Disabled by default.",
-        "modelDescription": "Calls any public method on an Odoo model. This is a powerful escape hatch: it can modify data. Prefer the dedicated read tools. Only use this when no other tool fits, and explain to the user what the call will do. This tool is disabled unless the user enables 'odooInspector.enableArbitraryMethodCalls'.",
-        "canBeReferencedInPrompt": true,
-        "toolReferenceName": "odooCall",
-        "tags": ["odoo", "database"],
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "model": { "type": "string", "description": "Technical model name." },
-            "method": { "type": "string", "description": "Method name, e.g. 'action_confirm'." },
-            "args": { "type": "array", "description": "Positional arguments.", "items": {} },
-            "kwargs": { "type": "object", "description": "Keyword arguments." }
-          },
-          "required": ["model", "method"]
-        }
-      }
-    ],
-    "mcpServerDefinitionProviders": [
-      {
-        "id": "odooInspector.mcp",
-        "label": "Odoo Inspector"
-      }
-    ]
+    }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
-    "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
-    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "compile": "pnpm run check-types && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "pnpm run check-types && node esbuild.js --production",
+    "vscode:prepublish": "pnpm run package",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test",
-    "test:unit": "tsc -p . --outDir out && mocha --ui tdd \"out/test/**/*.test.js\""
-  },
-  "devDependencies": {
-    "@types/vscode": "^1.140.0",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
-    "eslint": "^10.5.0",
-    "esbuild": "^0.28.1",
-    "npm-run-all": "^4.1.5",
-    "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "test": "mocha --ui tdd --import=tsx \"src/test/*.test.ts\"",
+    "e2e": "node scripts/run-e2e.js",
+    "check:view": "node scripts/run-view-check.js",
+    "test:integration": "mocha --ui tdd --import=tsx src/test/integration/*.test.ts",
+    "build": "node esbuild.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "zod": "^3.25.0"
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "fast-xml-parser": "5.11.2",
+    "zod": "4.6.5"
   },
-  "overrides": {
-    "diff": "^8.0.4",
-    "serialize-javascript": "^7.0.6"
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/mocha": "10.0.10",
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.109.0",
+    "esbuild": "0.28.2",
+    "mocha": "12.0.2",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
   }
 }
