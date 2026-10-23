@@ -4,7 +4,7 @@
   "description": "Query Odoo databases from chat, approving every column before it reaches the model.",
   "version": "0.2.0",
   "publisher": "odoo",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -163,7 +163,8 @@
     "check:view": "node scripts/run-view-check.js",
     "test:integration": "mocha --ui tdd --import=tsx src/test/integration/*.test.ts",
     "build": "node esbuild.js",
-    "lint": "eslint"
+    "lint": "eslint",
+    "vsix": "vsce package --no-dependencies --allow-missing-repository"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3",
@@ -177,6 +178,7 @@
     "@types/mocha": "10.0.10",
     "@types/node": "24.19.2",
     "@types/vscode": "1.109.0",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "0.28.2",
     "eslint": "10.12.0",
     "mocha": "12.0.2",

@@ -7,3 +7,8 @@ node_modules/**
 tsconfig.json
 esbuild.js
 pnpm-*.yaml
+shell.nix
+eslint.config.mjs
+.gitignore
+.github/**
+*.vsix
