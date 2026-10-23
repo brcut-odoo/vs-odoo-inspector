@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ConnectionConfig } from '../odoo/types';
+import { AuthMode, ConnectionConfig } from '../odoo/types';
 
 export const CONFIG_SECTION = 'odooInspector';
 
@@ -14,8 +14,16 @@ export function getConnections(): ConnectionConfig[] {
 			url: (entry.url ?? '').trim(),
 			db: (entry.db ?? '').trim(),
 			login: (entry.login ?? '').trim(),
-			authMode: entry.authMode ?? 'auto',
+			authMode: normalizeAuthMode(entry.authMode),
 		}));
+}
+
+/**
+ * Settings can hold anything (users edit `settings.json` by hand), so unknown
+ * auth modes fall back to `auto` rather than reaching the client.
+ */
+export function normalizeAuthMode(value: unknown): AuthMode | 'auto' {
+	return value === 'apiKey' || value === 'session' || value === 'password' ? value : 'auto';
 }
 
 /** The name of the connection the user last selected. */

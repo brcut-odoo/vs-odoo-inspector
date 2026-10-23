@@ -8,13 +8,14 @@
  *
  * Configuration comes from environment variables set by the extension's
  * `McpServerDefinitionProvider`:
- *   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_CREDENTIAL, ODOO_API_MODE
+ *   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_CREDENTIAL,
+ *   ODOO_AUTH_MODE, ODOO_API_MODE, ODOO_RATE_LIMIT, ODOO_MAX_ROWS
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { OdooClient } from './odoo/client';
-import { ApiMode, OdooError, QuerySpec } from './odoo/types';
+import { ApiMode, AuthMode, OdooError, QuerySpec } from './odoo/types';
 import { createTools, ToolContext, ToolDefinition } from './tools/registry';
 import { shapeOf } from './tools/jsonSchemaToZod';
 import { normalizeSpec } from './query/spec';
@@ -40,8 +41,18 @@ async function createClient(): Promise<OdooClient> {
 		);
 	}
 
+	const authMode = readEnv('ODOO_AUTH_MODE');
 	const client = new OdooClient({
-		connection: { name: 'mcp', url, db, login, authMode: 'auto' },
+		connection: {
+			name: 'mcp',
+			url,
+			db,
+			login,
+			authMode:
+				authMode === 'apiKey' || authMode === 'session' || authMode === 'password'
+					? (authMode as AuthMode)
+					: 'auto',
+		},
 		credential,
 		rateLimitPerSecond: Number(readEnv('ODOO_RATE_LIMIT') ?? 1),
 		forceApiMode: apiMode === 'json2' || apiMode === 'callKw' ? apiMode : undefined,

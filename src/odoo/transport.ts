@@ -16,6 +16,8 @@ export interface RawResponse {
 	status: number;
 	body: unknown;
 	text: string;
+	/** Response headers. Needed because Odoo 17+ only returns the session id here. */
+	headers: Headers;
 }
 
 /**
@@ -93,8 +95,40 @@ export class Transport {
 			throw buildHttpError(response.status, body, text);
 		}
 
-		return { status: response.status, body, text };
+		// Odoo rotates the session id on every save and only reports the new
+		// one through `Set-Cookie`. Track it so the next request stays on the
+		// same server-side session instead of relying on the old id remaining
+		// valid.
+		const rotated = extractSessionCookie(response.headers);
+		if (rotated) {
+			this.options.cookie = `session_id=${rotated}`;
+		}
+
+		return { status: response.status, body, text, headers: response.headers };
 	}
+}
+
+/**
+ * Reads `session_id` out of a `Set-Cookie` header, if present.
+ *
+ * `Headers.get('set-cookie')` is not trustworthy for multiple cookies: the
+ * fetch spec joins them with `, `. `getSetCookie()` is used when available and
+ * the joined form is only a fallback.
+ */
+export function extractSessionCookie(headers: Headers): string | undefined {
+	const getSetCookie = (headers as { getSetCookie?: () => string[] }).getSetCookie;
+	const values = typeof getSetCookie === 'function' ? getSetCookie.call(headers) : [];
+	const candidates = values.length ? values : [headers.get('set-cookie')].filter(Boolean);
+
+	for (const header of candidates as string[]) {
+		for (const piece of header.split(/,(?=\s*[A-Za-z0-9_-]+=)/)) {
+			const match = piece.trim().match(/(?:^|;)\s*session_id=([^;]+)/);
+			if (match) {
+				return decodeURIComponent(match[1].trim());
+			}
+		}
+	}
+	return undefined;
 }
 
 /** Strips trailing slashes and adds a scheme when the user omitted one. */

@@ -51,6 +51,7 @@ export class McpProvider implements vscode.Disposable {
 					ODOO_URL: connection.url,
 					ODOO_DB: connection.db,
 					ODOO_LOGIN: connection.login,
+					ODOO_AUTH_MODE: connection.authMode ?? 'auto',
 					ODOO_RATE_LIMIT: String(getRateLimit()),
 					ODOO_MAX_ROWS: String(getMaxRows()),
 				},
@@ -80,7 +81,11 @@ export class McpProvider implements vscode.Disposable {
 			return server;
 		}
 
-		const credential = await this.credentials.getOrPrompt(connection.name, connection.login);
+		const credential = await this.credentials.getOrPrompt(
+			connection.name,
+			connection.login,
+			connection.authMode,
+		);
 		if (!credential) {
 			return undefined;
 		}

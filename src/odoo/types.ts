@@ -12,8 +12,17 @@
  */
 export type ApiMode = 'json2' | 'callKw';
 
-/** How the user authenticates against a given connection. */
-export type AuthMode = 'apiKey' | 'session';
+/**
+ * How the user authenticates against a given connection.
+ *
+ * - `apiKey`   : Bearer token for `/json/2`, or exchanged for a session on
+ *                servers that lack `/json/2`.
+ * - `session`  : a `session_id` used directly as a cookie.
+ * - `password` : a real user password, exchanged for a session via
+ *                `/web/session/authenticate`. Always uses `callKw`, because
+ *                `/json/2` only accepts API keys.
+ */
+export type AuthMode = 'apiKey' | 'session' | 'password';
 
 export interface ConnectionConfig {
 	/** Stable identifier, also used as the SecretStorage key. */

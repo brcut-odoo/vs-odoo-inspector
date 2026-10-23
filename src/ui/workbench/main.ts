@@ -1,6 +1,6 @@
 import { Column } from '../../query/columns';
 import { QuerySpec } from '../../odoo/types';
-import { HostMessage, ResultMeta, WebviewMessage } from './protocol';
+import { HostMessage, PreviewMeta, ResultMeta, WebviewMessage } from './protocol';
 
 interface VsCodeApi {
 	postMessage(message: WebviewMessage): void;
@@ -17,6 +17,7 @@ interface State {
 	columns: Column[];
 	rows: Record<string, unknown>[];
 	meta?: ResultMeta;
+	preview?: PreviewMeta;
 	editable: boolean;
 	busy: boolean;
 	sortField?: string;
@@ -43,6 +44,7 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 			state.columns = message.columns;
 			state.rows = message.rows;
 			state.meta = message.meta;
+			state.preview = message.preview;
 			state.editable = message.editable;
 			state.error = undefined;
 			render();
@@ -51,8 +53,16 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 			state.rows = message.rows;
 			state.columns = message.columns;
 			state.meta = message.meta;
+			// Real rows replace the sample, so the preview banner is obsolete.
+			state.preview = undefined;
 			state.error = undefined;
 			state.busy = false;
+			render();
+			break;
+		case 'preview':
+			state.preview = message.preview;
+			state.rows = message.rows;
+			state.meta = undefined;
 			render();
 			break;
 		case 'columns':
@@ -81,8 +91,37 @@ function render(): void {
 	if (state.error) {
 		root.appendChild(renderError(state.error));
 	}
+	if (state.preview) {
+		root.appendChild(renderPreviewBanner(state.preview));
+	}
 	root.appendChild(renderTable());
 	root.appendChild(renderFooter());
+}
+
+/**
+ * Explains that the visible rows are a sample, not the result.
+ *
+ * Without this the table looks like a finished query, which makes the
+ * Execute button meaningless.
+ */
+function renderPreviewBanner(preview: PreviewMeta): HTMLElement {
+	const banner = el('div', 'preview');
+	const text = el('span', 'preview-text');
+
+	if (!preview.executed) {
+		text.textContent =
+			'Preview unavailable — the query could not be sampled before review. Execute to run it.';
+	} else if (preview.shown === 0) {
+		text.textContent = 'Preview: no records match this query.';
+	} else {
+		const noun = preview.shown === 1 ? 'row' : 'rows';
+		text.textContent =
+			`Preview — showing ${preview.shown} sample ${noun} of the first ${preview.limit}. ` +
+			'Nothing has been sent to the model yet; click Execute to approve and return these results.';
+	}
+
+	banner.appendChild(text);
+	return banner;
 }
 
 function renderToolbar(): HTMLElement {
@@ -104,7 +143,14 @@ function renderToolbar(): HTMLElement {
 
 	if (state.editable) {
 		const execute = el('button', 'primary') as HTMLButtonElement;
-		execute.textContent = state.busy ? 'Running…' : 'Execute';
+		execute.textContent = state.busy
+			? 'Running…'
+			: state.preview
+				? 'Approve'
+				: 'Execute';
+		execute.title = state.preview
+			? 'Approve this query and return the results to the model'
+			: 'Run this query';
 		execute.disabled = state.busy;
 		execute.addEventListener('click', () => {
 			vscode.postMessage({ type: 'execute', spec: buildSpec() });
@@ -154,7 +200,9 @@ function renderTable(): HTMLElement {
 			? 'Running query…'
 			: state.meta
 				? 'No records matched this query.'
-				: 'Click Execute to run this query.';
+				: state.preview?.executed
+					? 'No records matched this query.'
+					: 'Click Execute to run this query.';
 		row.appendChild(cell);
 		body.appendChild(row);
 	} else {
@@ -313,6 +361,10 @@ function renderFooter(): HTMLElement {
 			parts.push('limit reached');
 		}
 		footer.textContent = parts.join(' · ');
+	} else if (state.preview?.executed) {
+		footer.textContent =
+			`Sampled ${state.preview.shown} row${state.preview.shown === 1 ? '' : 's'} for review · ` +
+			'Click a column header to include or exclude it from the request.';
 	} else {
 		footer.textContent = 'Click a column header to include or exclude it from the request.';
 	}

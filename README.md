@@ -16,10 +16,20 @@ The workbench is both the request editor and the result viewer.
 |---|---|
 | Click a column header | Toggles that field's inclusion in the request |
 | Hover a header, click the caret | Sorts by that column |
-| Execute | Sends the query built from the current column selection |
+| Approve / Execute | Sends the query built from the current column selection |
 | Cancel | Abandons the query; the tool reports the cancellation |
 
 Disabled columns stay visible — dimmed, struck through, with blank cells — so re-enabling one is a single click.
+
+### Preview
+
+Read-only queries are sampled before the table opens, so you see the real records while reviewing rather than approving a query blind. A banner marks the rows as a sample and the button reads **Approve** instead of **Execute**.
+
+- If you approve without changing anything, the existing sample is returned and no second request is made.
+- Editing the columns, sorting, or changing the query in **Advanced (JSON)** invalidates the sample; Approve then runs the query for real.
+- `odoo_call_method` is never previewed — its side effects are unknown, so it must not run before approval. Its approval table has no rows.
+- If the sample fails (for example on a protected field) the banner says so and the query remains reviewable.
+- The sample respects `odooInspector.maxRows`, so it never fetches more than the result table would show.
 
 ## Setup
 
@@ -39,7 +49,7 @@ Disabled columns stay visible — dimmed, struck through, with blank cells — s
    }
    ```
 
-2. Run **Odoo: Set Credentials** and paste an API key (recommended) or a `session_id`. Credentials go to the OS keychain via `SecretStorage`, never to settings.
+2. Run **Odoo: Set Credentials** and paste an API key (recommended), a `session_id`, or a password. Credentials go to the OS keychain via `SecretStorage`, never to settings.
 
 3. Run **Odoo: Connect to Database**, or just invoke a tool — it connects on demand.
 
@@ -50,8 +60,26 @@ Disabled columns stay visible — dimmed, struck through, with blank cells — s
 | `apiKey` | `/json/2` (18.5+) | `Authorization: Bearer <key>` + `X-Odoo-Database` |
 | `apiKey` | `call_kw` (< 18.5) | The key is exchanged for a session via `/web/session/authenticate` |
 | `session` | `call_kw` | `session_id` cookie; `/json/2` rejects cookies |
+| `password` | `call_kw` | The password is exchanged for a session; `/json/2` only accepts API keys |
 
-`auto` treats a credential of 40+ characters as an API key.
+`auto` picks the mode from the credential's shape:
+
+| Credential | Detected as | Why |
+|---|---|---|
+| 40 lowercase hex characters | `apiKey` | Odoo generates 20 random bytes hexlified (`API_KEY_SIZE`) |
+| 42 url-safe characters | `session` | werkzeug session ids are 42 characters (`STORED_SESSION_BYTES`) |
+| anything else | `password` | Exchanged for a session on connect |
+
+Set `authMode` explicitly when the shape is ambiguous — a 40-character password that happens to be hexadecimal would be read as an API key.
+
+### Password auth
+
+Passwords work, with two caveats:
+
+- **Two-factor authentication blocks it.** Odoo refuses to open an RPC session for a user with TOTP enabled and returns `uid: null`; the extension reports this and suggests an API key. Use `apiKey` for such users.
+- **Prefer API keys.** They are revocable and scoped. A password in the keychain is a full login credential.
+
+Password mode always uses `call_kw`, so it loses `/json/2` on Odoo 18.5+.
 
 ## Tools
 

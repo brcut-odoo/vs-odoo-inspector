@@ -9,7 +9,7 @@ import {
 	QuerySpec,
 	ResolvedConnection,
 } from './types';
-import { Transport, extractErrorMessage } from './transport';
+import { Transport, extractErrorMessage, extractSessionCookie } from './transport';
 import { RateLimiter } from './rateLimiter';
 import { probeVersion } from './version';
 import { RpcBackend } from './backends/backend';
@@ -75,6 +75,11 @@ export class OdooClient {
 		// session cookie. The auth mode therefore constrains the API mode.
 		if (authMode === 'session') {
 			apiMode = 'callKw';
+		} else if (authMode === 'password') {
+			// A password can never be a Bearer token, so this is always call_kw.
+			apiMode = 'callKw';
+			const sessionId = await authenticateWithPassword(transport, connection, credential);
+			transport.setCookie(`session_id=${sessionId}`);
 		} else if (apiMode === 'callKw') {
 			// An API key on a pre-18.5 server: exchange it for a session cookie.
 			const sessionId = await authenticateWithApiKey(transport, connection, credential);
@@ -206,15 +211,34 @@ export class OdooClient {
 /**
  * Decides how to authenticate.
  *
- * An explicit `authMode` wins. Otherwise a long, non-password-looking string is
- * treated as an API key, which is the modern default.
+ * An explicit `authMode` wins. `auto` uses the credential's shape:
+ *
+ *  - 40 hex characters is exactly what `res.users.apikeys._generate` produces
+ *    (`API_KEY_SIZE = 20` bytes hexlified), so it is an API key.
+ *  - werkzeug session ids are 42 url-safe characters (`STORED_SESSION_BYTES`),
+ *    so a credential of that shape is treated as an existing session.
+ *  - anything else is a password, which must be exchanged for a session.
+ *
+ * The password default matters: guessing `session` for a short credential
+ * silently produced `Cookie: session_id=<password>`, which Odoo answered with
+ * "Session expired".
  */
 export function resolveAuthMode(connection: ConnectionConfig, credential: string): AuthMode {
-	if (connection.authMode === 'apiKey' || connection.authMode === 'session') {
+	if (
+		connection.authMode === 'apiKey' ||
+		connection.authMode === 'session' ||
+		connection.authMode === 'password'
+	) {
 		return connection.authMode;
 	}
-	// Odoo API keys are long random strings; session ids are 40-char hex.
-	return credential.length >= 40 ? 'apiKey' : 'session';
+	const trimmed = credential.trim();
+	if (/^[0-9a-f]{40}$/i.test(trimmed)) {
+		return 'apiKey';
+	}
+	if (/^[A-Za-z0-9_-]{42}$/.test(trimmed)) {
+		return 'session';
+	}
+	return 'password';
 }
 
 function buildHeaders(
@@ -242,16 +266,48 @@ async function authenticateWithApiKey(
 	connection: ConnectionConfig,
 	apiKey: string,
 ): Promise<string> {
+	return authenticateForSession(transport, connection, apiKey, 'API key');
+}
+
+/**
+ * Exchanges a user password for a session id.
+ *
+ * Uses the same endpoint as the API-key exchange, but reports failures as
+ * password problems. Users with two-factor authentication enabled cannot get
+ * an RPC session this way — Odoo returns `uid: null` — which this reports
+ * explicitly rather than as a generic auth failure.
+ */
+async function authenticateWithPassword(
+	transport: Transport,
+	connection: ConnectionConfig,
+	password: string,
+): Promise<string> {
+	return authenticateForSession(transport, connection, password, 'password');
+}
+
+/**
+ * Shared implementation of `/web/session/authenticate`.
+ *
+ * Odoo 17+ no longer includes `session_id` in the response body; it only sets
+ * the cookie. So the id is read from `result.session_id` when present and
+ * otherwise taken from the `Set-Cookie` header, which the transport records.
+ */
+async function authenticateForSession(
+	transport: Transport,
+	connection: ConnectionConfig,
+	secret: string,
+	label: string,
+): Promise<string> {
 	const response = await transport.postJson('/web/session/authenticate', {
 		jsonrpc: '2.0',
 		method: 'call',
-		params: { db: connection.db, login: connection.login, password: apiKey },
+		params: { db: connection.db, login: connection.login, password: secret },
 	});
 
 	const body = response.body as Record<string, unknown> | undefined;
 	if (body?.error) {
 		throw new OdooError(
-			`Could not authenticate with the API key: ${extractErrorMessage(body) ?? 'unknown error'}`,
+			`Could not authenticate with the ${label}: ${extractErrorMessage(body) ?? 'unknown error'}`,
 			'auth',
 			undefined,
 			body.error,
@@ -259,10 +315,23 @@ async function authenticateWithApiKey(
 	}
 
 	const result = body?.result as Record<string, unknown> | undefined;
-	const sessionId = result?.session_id;
-	if (typeof sessionId !== 'string' || !sessionId) {
+	const sessionId =
+		typeof result?.session_id === 'string' ? result.session_id : extractSessionCookie(response.headers);
+
+	if (!sessionId) {
+		if (result && result.uid === null) {
+			throw new OdooError(
+				`The server refused to open a session with the ${label}. ` +
+					'This usually means two-factor authentication is enabled for this user; ' +
+					'use an API key for this connection instead.',
+				'auth',
+				undefined,
+				body,
+			);
+		}
 		throw new OdooError(
-			'The server did not return a session id. Check the database name and login.',
+			`The server did not return a session id after authenticating with the ${label}. ` +
+				'Check the database name and login.',
 			'auth',
 			undefined,
 			body,

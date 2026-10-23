@@ -15,6 +15,21 @@ export interface ResultMeta {
 	truncated: boolean;
 }
 
+/**
+ * Marks the rows as a pre-execution sample rather than a real result.
+ *
+ * The gate runs the query itself, so this is only used to show the user what
+ * the request would return while they are still reviewing it.
+ */
+export interface PreviewMeta {
+	/** Number of sample rows shown. */
+	shown: number;
+	/** Rows requested; `shown < limit` means the query has no more matches. */
+	limit: number;
+	/** Whether the write method can be previewed at all (false for `call`). */
+	executed: boolean;
+}
+
 /** Messages sent from the extension host to the webview. */
 export type HostMessage =
 	| {
@@ -23,10 +38,17 @@ export type HostMessage =
 			columns: Column[];
 			rows: Record<string, unknown>[];
 			meta?: ResultMeta;
+			/** Set when `rows` is a sample fetched for review, not a result. */
+			preview?: PreviewMeta;
 			/** Whether the Execute button should be shown (false for read-only views). */
 			editable: boolean;
 	  }
 	| { type: 'results'; rows: Record<string, unknown>[]; columns: Column[]; meta: ResultMeta }
+	/**
+	 * Replaces the previewed rows, e.g. after the spec was edited in the
+	 * Advanced pane and the old sample no longer applies.
+	 */
+	| { type: 'preview'; preview?: PreviewMeta; rows: Record<string, unknown>[] }
 	| { type: 'columns'; columns: Column[] }
 	| { type: 'busy'; busy: boolean }
 	| { type: 'error'; message: string; hint?: string }

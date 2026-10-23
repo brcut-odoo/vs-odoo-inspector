@@ -1,5 +1,12 @@
 import * as assert from 'assert';
-import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT, normalizeSpec, parseSpec } from '../query/spec';
+import {
+	clampLimit,
+	DEFAULT_LIMIT,
+	isReadOnlyMethod,
+	MAX_LIMIT,
+	normalizeSpec,
+	parseSpec,
+} from '../query/spec';
 import { validateSpec } from '../query/validate';
 import { FieldsGetResult } from '../odoo/types';
 
@@ -45,6 +52,22 @@ suite('Spec normalization', () => {
 		fields.push('email');
 
 		assert.deepStrictEqual(spec.fields, ['name']);
+	});
+});
+
+suite('Read-only detection', () => {
+	test('treats the query methods as read-only', () => {
+		for (const method of ['search_read', 'search', 'search_count', 'read', 'fields_get', 'name_search']) {
+			assert.strictEqual(isReadOnlyMethod(method), true, method);
+		}
+	});
+
+	test('treats mutations and arbitrary calls as unsafe to preview', () => {
+		// `call` matters most: `odoo_call_method` can invoke anything, so a
+		// preview would execute an unknown side effect before the user approves.
+		for (const method of ['call', 'create', 'write', 'unlink', 'something_else']) {
+			assert.strictEqual(isReadOnlyMethod(method), false, method);
+		}
 	});
 });
 

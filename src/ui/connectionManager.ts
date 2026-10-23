@@ -64,7 +64,11 @@ export class ConnectionManager implements vscode.Disposable {
 			);
 		}
 
-		const credential = await this.credentials.getOrPrompt(connection.name, connection.login);
+		const credential = await this.credentials.getOrPrompt(
+			connection.name,
+			connection.login,
+			connection.authMode,
+		);
 		if (!credential) {
 			throw new OdooError('No credential provided for this connection.', 'auth');
 		}

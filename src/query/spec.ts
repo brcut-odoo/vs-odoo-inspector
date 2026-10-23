@@ -7,6 +7,28 @@ export const DEFAULT_LIMIT = 200;
 export const MAX_LIMIT = 5000;
 
 /**
+ * Methods that never mutate data.
+ *
+ * Used by the `writes-only` gate mode, and to decide whether a query may be
+ * run as a preview while the user is still reviewing it. `call` is excluded
+ * on purpose: `odoo_call_method` can invoke anything, so its effect is not
+ * knowable ahead of time and it must never be executed to build a preview.
+ */
+const READ_ONLY_METHODS = new Set([
+	'search_read',
+	'search',
+	'search_count',
+	'read',
+	'fields_get',
+	'name_search',
+]);
+
+/** Whether executing this method is free of side effects. */
+export function isReadOnlyMethod(method: string): boolean {
+	return READ_ONLY_METHODS.has(method);
+}
+
+/**
  * Normalizes a partial spec into a complete one.
  *
  * Kept pure so it can be unit-tested without a server.

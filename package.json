@@ -68,9 +68,9 @@
               },
               "authMode": {
                 "type": "string",
-                "enum": ["auto", "apiKey", "session"],
+                "enum": ["auto", "apiKey", "session", "password"],
                 "default": "auto",
-                "description": "How to authenticate. 'auto' treats long credentials as API keys."
+                "markdownDescription": "How to authenticate. `auto` treats long credentials as API keys. `password` exchanges the user's password for a session and always uses the `call_kw` API; it does not work for users with two-factor authentication enabled."
               }
             }
           }

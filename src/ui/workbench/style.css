@@ -96,6 +96,20 @@ button:disabled {
 	font-size: 0.9em;
 }
 
+.preview {
+	flex: 0 0 auto;
+	margin: 8px 12px 0;
+	padding: 8px 12px;
+	border-left: 3px solid var(--accent);
+	background: var(--vscode-editorInfo-background, rgba(0, 122, 204, 0.1));
+	color: var(--vscode-editorInfo-foreground, inherit);
+	font-size: 0.9em;
+}
+
+.preview-text {
+	white-space: pre-wrap;
+}
+
 .table-wrapper {
 	flex: 1 1 auto;
 	overflow: auto;

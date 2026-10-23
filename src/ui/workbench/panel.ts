@@ -4,7 +4,7 @@ import { OdooClient } from '../../odoo/client';
 import { buildColumns, Column, toggleColumn } from '../../query/columns';
 import { normalizeSpec } from '../../query/spec';
 import { formatIssues, validateSpec } from '../../query/validate';
-import { HostMessage, isWebviewMessage, ResultMeta } from './protocol';
+import { HostMessage, isWebviewMessage, PreviewMeta, ResultMeta } from './protocol';
 
 export interface WorkbenchOptions {
 	client: OdooClient;
@@ -16,6 +16,8 @@ export interface WorkbenchOptions {
 	editable?: boolean;
 	/** Rows to show immediately, if any. */
 	rows?: Record<string, unknown>[];
+	/** Set when `rows` is a pre-execution sample rather than a result. */
+	preview?: PreviewMeta;
 	/** Title suffix, e.g. the model name. */
 	title?: string;
 }
@@ -43,6 +45,10 @@ export class WorkbenchPanel {
 	private columns: Column[];
 	private rows: Record<string, unknown>[];
 	private meta?: ResultMeta;
+	/** Set while `rows` is a pre-execution sample; cleared by `execute`. */
+	private preview?: PreviewMeta;
+	/** The spec the sample was fetched for, so Execute can reuse it. */
+	private previewSpec?: string;
 	private resolver?: (result: GateResult) => void;
 	private abortController?: AbortController;
 
@@ -54,6 +60,8 @@ export class WorkbenchPanel {
 		this.fields = options.fields ?? {};
 		this.columns = buildColumns(this.fields, this.spec);
 		this.rows = options.rows ?? [];
+		this.preview = options.preview;
+		this.previewSpec = options.preview ? specKey(this.spec) : undefined;
 
 		this.panel = vscode.window.createWebviewPanel(
 			'odooInspector.workbench',
@@ -128,6 +136,7 @@ export class WorkbenchPanel {
 			columns: this.columns,
 			rows: this.rows,
 			meta: this.meta,
+			preview: this.preview,
 			editable: this.options.editable !== false,
 		});
 	}
@@ -198,22 +207,28 @@ export class WorkbenchPanel {
 			return;
 		}
 
+		// When the user approves the query exactly as it was sampled, the
+		// sample *is* the result. Re-running it would double every request
+		// against a 1 req/s throttle for an identical answer.
+		if (this.canReuseSample()) {
+			this.meta = this.buildMeta(this.rows, 0);
+			this.dropSample();
+			// The `results` message clears the preview banner in the webview.
+			this.post({ type: 'results', rows: this.rows, columns: this.columns, meta: this.meta });
+			this.resolveGate({ kind: 'execute', spec: this.spec, rows: this.rows, meta: this.meta });
+			return;
+		}
+
 		this.post({ type: 'busy', busy: true });
 		this.abortController = new AbortController();
 		const started = Date.now();
 
 		try {
 			const rows = await this.runQuery(this.spec, this.abortController.signal);
-			const elapsedMs = Date.now() - started;
 			this.rows = rows;
-			this.meta = {
-				rowCount: rows.length,
-				elapsedMs,
-				apiMode: this.options.client.apiMode ?? 'unknown',
-				model: this.spec.model,
-				truncated: Boolean(this.spec.limit && rows.length >= this.spec.limit),
-			};
+			this.meta = this.buildMeta(rows, Date.now() - started);
 			this.columns = buildColumns(this.fields, this.spec);
+			this.dropSample();
 			this.post({ type: 'results', rows, columns: this.columns, meta: this.meta });
 			this.resolveGate({ kind: 'execute', spec: this.spec, rows, meta: this.meta });
 		} catch (error) {
@@ -229,6 +244,41 @@ export class WorkbenchPanel {
 		} finally {
 			this.abortController = undefined;
 		}
+	}
+
+	/**
+	 * Whether the sample already covers what the current spec asks for.
+	 *
+	 * The sample is only valid when the spec is unchanged *and* the requested
+	 * limit does not exceed what was sampled; otherwise the real query would
+	 * return more rows than the table is holding.
+	 */
+	private canReuseSample(): boolean {
+		if (!this.preview?.executed || this.previewSpec !== specKey(this.spec)) {
+			return false;
+		}
+		return (this.spec.limit ?? 0) <= this.preview.limit;
+	}
+
+	/**
+	 * Forgets the sample, because the visible rows are now a real result.
+	 *
+	 * The panel stays open after approval, so without this a second Approve
+	 * would keep serving the stale sample.
+	 */
+	private dropSample(): void {
+		this.preview = undefined;
+		this.previewSpec = undefined;
+	}
+
+	private buildMeta(rows: Record<string, unknown>[], elapsedMs: number): ResultMeta {
+		return {
+			rowCount: rows.length,
+			elapsedMs,
+			apiMode: this.options.client.apiMode ?? 'unknown',
+			model: this.spec.model,
+			truncated: Boolean(this.spec.limit && rows.length >= this.spec.limit),
+		};
 	}
 
 	private async runQuery(
@@ -302,8 +352,16 @@ export class WorkbenchPanel {
 			const parsed = JSON.parse(document.getText()) as QuerySpec;
 			this.spec = normalizeSpec(parsed);
 			this.columns = buildColumns(this.fields, this.spec);
+			// The sample was fetched for the old spec and no longer describes
+			// what Execute would send.
+			if (this.previewSpec !== specKey(this.spec)) {
+				this.preview = undefined;
+				this.previewSpec = undefined;
+				this.rows = [];
+			}
 			this.post({ type: 'spec', spec: this.spec });
 			this.post({ type: 'columns', columns: this.columns });
+			this.post({ type: 'preview', preview: this.preview, rows: this.rows });
 		} catch (error) {
 			void vscode.window.showErrorMessage(`Invalid query JSON: ${(error as Error).message}`);
 		}
@@ -354,6 +412,28 @@ export class WorkbenchPanel {
 		}
 		this.panel.dispose();
 	}
+}
+
+/**
+ * A stable key for comparing specs.
+ *
+ * `JSON.stringify` preserves insertion order, so the fields are listed
+ * explicitly to make the comparison independent of how the spec was built.
+ */
+function specKey(spec: QuerySpec): string {
+	return JSON.stringify([
+		spec.model,
+		spec.method,
+		spec.rawMethod ?? null,
+		spec.domain ?? [],
+		spec.fields ?? [],
+		spec.limit ?? null,
+		spec.offset ?? null,
+		spec.order ?? null,
+		spec.context ?? null,
+		spec.ids ?? [],
+		spec.name ?? null,
+	]);
 }
 
 function createNonce(): string {
