@@ -256,12 +256,25 @@ function renderRow(record: Record<string, unknown>): HTMLElement {
 	const row = el('tr');
 	for (const column of state.columns) {
 		const cell = el('td') as HTMLTableCellElement;
+		const hasValue = Object.prototype.hasOwnProperty.call(record, column.name);
+		const text = hasValue ? formatValue(record[column.name], column) : '';
+
 		if (!column.enabled) {
+			// Keep the value visible so the user can see exactly what they are
+			// omitting. When the field was never requested (a fresh query), say
+			// so rather than showing a misleading blank.
 			cell.classList.add('disabled');
-			cell.textContent = '';
+			if (hasValue) {
+				cell.textContent = text;
+				cell.title = `${text}\n\nExcluded from the request`;
+			} else {
+				cell.classList.add('omitted');
+				cell.textContent = 'not requested';
+				cell.title = `"${column.label}" is excluded from the request`;
+			}
 		} else {
-			cell.textContent = formatValue(record[column.name], column);
-			cell.title = cell.textContent;
+			cell.textContent = text;
+			cell.title = text;
 		}
 		row.appendChild(cell);
 	}

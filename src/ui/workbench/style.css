@@ -171,6 +171,11 @@ table.grid tbody tr:hover {
 }
 
 table.grid tbody td.disabled {
+	/* Keep the value legible so the user can see what they are omitting,
+	   but make it unmistakably de-emphasized. */
+	color: var(--muted);
+	font-style: italic;
+	opacity: 0.65;
 	background: repeating-linear-gradient(
 		45deg,
 		transparent,
@@ -178,6 +183,16 @@ table.grid tbody td.disabled {
 		rgba(128, 128, 128, 0.06) 4px,
 		rgba(128, 128, 128, 0.06) 8px
 	);
+}
+
+table.grid tbody td.disabled.omitted {
+	opacity: 0.45;
+	font-size: 0.85em;
+	text-align: center;
+}
+
+table.grid tbody tr:hover td.disabled {
+	opacity: 0.9;
 }
 
 td.empty {
