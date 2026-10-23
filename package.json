@@ -1,0 +1,296 @@
+{
+  "name": "vs-odoo-inspector",
+  "displayName": "VS Odoo Inspector",
+  "description": "Examine Odoo databases",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.140.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "odooInspector.connect",
+        "title": "Odoo: Connect to Database",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.disconnect",
+        "title": "Odoo: Disconnect",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.setCredentials",
+        "title": "Odoo: Set Credentials",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.openWorkbench",
+        "title": "Odoo: Open Query Workbench",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.showOutput",
+        "title": "Odoo: Show Output",
+        "category": "Odoo"
+      }
+    ],
+    "configuration": {
+      "title": "Odoo Inspector",
+      "properties": {
+        "odooInspector.connections": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Odoo databases this extension can connect to. Credentials are stored separately in the OS keychain via **Odoo: Set Credentials**.",
+          "items": {
+            "type": "object",
+            "required": ["name", "url", "db", "login"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "A unique label for this connection."
+              },
+              "url": {
+                "type": "string",
+                "description": "Base URL, e.g. https://mycompany.odoo.com or http://localhost:8069."
+              },
+              "db": {
+                "type": "string",
+                "description": "Technical database name."
+              },
+              "login": {
+                "type": "string",
+                "description": "Login of the user the credentials belong to."
+              },
+              "authMode": {
+                "type": "string",
+                "enum": ["auto", "apiKey", "session"],
+                "default": "auto",
+                "description": "How to authenticate. 'auto' treats long credentials as API keys."
+              }
+            }
+          }
+        },
+        "odooInspector.activeConnection": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the connection to use by default."
+        },
+        "odooInspector.rateLimitPerSecond": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Maximum requests per second. Odoo SaaS instances throttle aggressively; raise this only for local databases."
+        },
+        "odooInspector.maxRows": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of rows returned to the language model."
+        },
+        "odooInspector.queryGate": {
+          "type": "string",
+          "enum": ["always", "writes-only", "never"],
+          "default": "always",
+          "markdownDescription": "When to open the Query Workbench so the user can review and edit a query before it is sent. `always` gates every tool call; `writes-only` gates only mutating calls; `never` runs queries immediately."
+        },
+        "odooInspector.enableArbitraryMethodCalls": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enables the `odoo_call_method` tool, which can invoke any public method on any model. This is effectively unrestricted access to the database."
+        }
+      }
+    },
+    "languageModelTools": [
+      {
+        "name": "odoo_list_models",
+        "displayName": "List Odoo Models",
+        "userDescription": "List the models available on the connected Odoo database.",
+        "modelDescription": "Lists the models available on the connected Odoo database, with their technical name and human label. Use this first when you do not know which model holds the data you need. Returns at most 500 models; filter with the 'filter' parameter to narrow the list.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooModels",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filter": {
+              "type": "string",
+              "description": "Case-insensitive substring matched against the model name or label, e.g. 'sale' or 'invoice'."
+            }
+          }
+        }
+      },
+      {
+        "name": "odoo_get_fields",
+        "displayName": "Get Odoo Model Fields",
+        "userDescription": "Describe the fields of an Odoo model.",
+        "modelDescription": "Returns the field definitions of an Odoo model: technical name, label, type, whether it is stored, and for relational fields the target model. Always call this before building a domain or choosing fields, so you do not reference fields that do not exist.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooFields",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Technical model name, e.g. 'res.partner' or 'sale.order'."
+            },
+            "fields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional subset of field names to describe. Omit to get all fields."
+            }
+          },
+          "required": ["model"]
+        }
+      },
+      {
+        "name": "odoo_search_read",
+        "displayName": "Search and Read Odoo Records",
+        "userDescription": "Search records on an Odoo model and return the requested fields.",
+        "modelDescription": "Searches records on an Odoo model and returns the requested fields. This is the main read tool. The user can review and edit the query — including which columns are returned — before it is sent, so propose a complete query rather than a minimal one. Domains use Odoo syntax: [[\"field\", \"operator\", value], ...] with operators such as =, !=, >, <, in, ilike, child_of. Prefix with '&', '|', '!' for boolean logic. Call odoo_get_fields first if you are unsure of field names.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooSearch",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string", "description": "Technical model name, e.g. 'res.partner'." },
+            "domain": {
+              "type": "array",
+              "description": "Odoo search domain. Omit or use [] to match all records.",
+              "items": {}
+            },
+            "fields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Field names to return. Omit to let the user pick columns in the workbench."
+            },
+            "limit": { "type": "number", "description": "Maximum number of records. Defaults to 200." },
+            "offset": { "type": "number", "description": "Number of records to skip." },
+            "order": {
+              "type": "string",
+              "description": "Sort order, e.g. 'create_date desc' or 'name asc, id desc'."
+            },
+            "context": {
+              "type": "object",
+              "description": "Odoo context overrides, e.g. {\"lang\": \"en_US\", \"active_test\": false}."
+            }
+          },
+          "required": ["model"]
+        }
+      },
+      {
+        "name": "odoo_read_records",
+        "displayName": "Read Odoo Records by ID",
+        "userDescription": "Read specific Odoo records by their database ids.",
+        "modelDescription": "Reads specific records by their database ids. Use this when you already have ids from a previous search. Prefer odoo_search_read when you need to filter by field values.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooRead",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string", "description": "Technical model name." },
+            "ids": {
+              "type": "array",
+              "items": { "type": "number" },
+              "description": "Database ids of the records to read."
+            },
+            "fields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Field names to return. Omit for all fields."
+            }
+          },
+          "required": ["model", "ids"]
+        }
+      },
+      {
+        "name": "odoo_count_records",
+        "displayName": "Count Odoo Records",
+        "userDescription": "Count the records matching a domain.",
+        "modelDescription": "Counts the records matching a domain, without fetching them. Use this to check how many records a query would return before reading them.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooCount",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string", "description": "Technical model name." },
+            "domain": {
+              "type": "array",
+              "description": "Odoo search domain. Omit or use [] to count all records.",
+              "items": {}
+            }
+          },
+          "required": ["model"]
+        }
+      },
+      {
+        "name": "odoo_call_method",
+        "displayName": "Call an Odoo Method",
+        "userDescription": "Call an arbitrary method on an Odoo model. Disabled by default.",
+        "modelDescription": "Calls any public method on an Odoo model. This is a powerful escape hatch: it can modify data. Prefer the dedicated read tools. Only use this when no other tool fits, and explain to the user what the call will do. This tool is disabled unless the user enables 'odooInspector.enableArbitraryMethodCalls'.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "odooCall",
+        "tags": ["odoo", "database"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string", "description": "Technical model name." },
+            "method": { "type": "string", "description": "Method name, e.g. 'action_confirm'." },
+            "args": { "type": "array", "description": "Positional arguments.", "items": {} },
+            "kwargs": { "type": "object", "description": "Keyword arguments." }
+          },
+          "required": ["model", "method"]
+        }
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "odooInspector.mcp",
+        "label": "Odoo Inspector"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "test:unit": "tsc -p . --outDir out && mocha --ui tdd \"out/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.140.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "esbuild": "^0.28.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
