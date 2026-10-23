@@ -85,7 +85,8 @@ When the model asks for no fields, a default set of up to 12 useful stored field
 
 ```sh
 pnpm install
-pnpm run compile        # type-check + bundle (extension + inlined view)
+pnpm run compile        # type-check + lint + bundle (extension + inlined view)
+pnpm run lint           # ESLint (typescript-eslint, type-aware promise checks)
 pnpm test               # unit tests
 pnpm run check:view     # drives the approval view in headless Chrome (CHROME=/path/to/chrome)
 ```

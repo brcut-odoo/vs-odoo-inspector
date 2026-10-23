@@ -153,16 +153,17 @@
     }
   },
   "scripts": {
-    "compile": "pnpm run check-types && node esbuild.js",
+    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "pnpm run check-types && node esbuild.js --production",
+    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
     "vscode:prepublish": "pnpm run package",
     "check-types": "tsc --noEmit",
     "test": "mocha --ui tdd --import=tsx \"src/test/*.test.ts\"",
     "e2e": "node scripts/run-e2e.js",
     "check:view": "node scripts/run-view-check.js",
     "test:integration": "mocha --ui tdd --import=tsx src/test/integration/*.test.ts",
-    "build": "node esbuild.js"
+    "build": "node esbuild.js",
+    "lint": "eslint"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3",
@@ -177,8 +178,10 @@
     "@types/node": "24.19.2",
     "@types/vscode": "1.109.0",
     "esbuild": "0.28.2",
+    "eslint": "10.12.0",
     "mocha": "12.0.2",
     "tsx": "4.23.15",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
   }
 }

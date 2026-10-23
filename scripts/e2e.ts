@@ -94,7 +94,7 @@ async function main(): Promise<void> {
 		const call = apps.callTool({ name: 'odoo_search_read', arguments: base }, { onprogress: () => progress++, resetTimeoutOnProgress: true });
 		const preview = await awaitPreview(apps, base);
 		assert.equal(preview.status, 'pending');
-		if (preview.status !== 'pending') return;
+		if (preview.status !== 'pending') {return;}
 		const statuses = Object.fromEntries(preview.preview.columns.map((c) => [c.name, `${c.status}${c.usedInFilter ? '+filter' : ''}`]));
 		assert.deepEqual(statuses, { id: 'approved+filter', name: 'new', email: 'new', phone: 'new' });
 		assert.ok(preview.preview.rows[0].email, 'the view sees the real email');
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
 		const args = { ...base, fields: ['name', 'phone', 'city'] };
 		const call = apps.callTool({ name: 'odoo_search_read', arguments: args });
 		const preview = await awaitPreview(apps, args);
-		if (preview.status !== 'pending') throw new Error(preview.status);
+		if (preview.status !== 'pending') {throw new Error(preview.status);}
 		const statuses = Object.fromEntries(preview.preview.columns.map((c) => [c.name, c.status]));
 		assert.deepEqual(statuses, { id: 'approved', name: 'approved', phone: 'denied', city: 'new' });
 		await apps.callTool({ name: 'odoo_approval_decide', arguments: { id: preview.preview.id, approved: false, columns: [] } });
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
 		const args = { model: 'res.partner', method: 'search_count', args: [[['email', 'ilike', '@']]] };
 		const call = apps.callTool({ name: 'odoo_execute_kw', arguments: args });
 		const preview = await awaitPreview(apps, args);
-		if (preview.status !== 'pending') throw new Error(preview.status);
+		if (preview.status !== 'pending') {throw new Error(preview.status);}
 		const columns = Object.fromEntries(preview.preview.columns.map((c) => [c.name, c.filterOnly]));
 		assert.deepEqual(columns, { result: false, email: true });
 		await apps.callTool({ name: 'odoo_approval_decide', arguments: { id: preview.preview.id, approved: true, columns: ['result', 'email'] } });
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
 		const args = { model: 'res.partner', method: 'write', args: [[partner.id], { function: 'E2E Tester', comment: 'should not be written' }] };
 		const call = apps.callTool({ name: 'odoo_execute_kw', arguments: args });
 		const preview = await awaitPreview(apps, args);
-		if (preview.status !== 'pending') throw new Error(preview.status);
+		if (preview.status !== 'pending') {throw new Error(preview.status);}
 		assert.equal(preview.preview.write, true);
 		const [during] = await direct.read('res.partner', [partner.id as number], ['function']);
 		assert.equal(during.function, before.function, 'nothing is written before approval');
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
 		const args = { model: 'res.partner', method: 'write', args: [[partner.id], { function: 'Denied' }] };
 		const call = apps.callTool({ name: 'odoo_execute_kw', arguments: args });
 		const preview = await awaitPreview(apps, args);
-		if (preview.status !== 'pending') throw new Error(preview.status);
+		if (preview.status !== 'pending') {throw new Error(preview.status);}
 		await apps.callTool({ name: 'odoo_approval_decide', arguments: { id: preview.preview.id, approved: false, columns: [] } });
 		await call;
 		const [after] = await direct.read('res.partner', [partner.id as number], ['function']);

@@ -53,11 +53,13 @@ bridge.oninitialized = () => {
 // Listen before the view loads, as a real host does: the view sends
 // `ui/initialize` as soon as its script runs.
 void bridge.connect(new PostMessageTransport(iframe.contentWindow!, iframe.contentWindow!));
-iframe.addEventListener('load', async () => {
+iframe.addEventListener('load', () => void drive());
+
+async function drive(): Promise<void> {
 	const doc = iframe.contentDocument!;
 	const waitFor = async (predicate: () => boolean, what: string) => {
-		for (let i = 0; i < 100 && !predicate(); i++) await new Promise((r) => setTimeout(r, 50));
-		if (!predicate()) throw new Error(`timed out waiting for ${what}`);
+		for (let i = 0; i < 100 && !predicate(); i++) {await new Promise((r) => setTimeout(r, 50));}
+		if (!predicate()) {throw new Error(`timed out waiting for ${what}`);}
 	};
 	try {
 		await waitFor(() => doc.querySelectorAll('th').length === 4, 'table');
@@ -77,5 +79,5 @@ iframe.addEventListener('load', async () => {
 	} catch (error) {
 		note(`VIEW CHECK FAILED: ${(error as Error).message}\n${doc.body.innerHTML.slice(0, 2000)}`);
 	}
-});
+}
 iframe.srcdoc = VIEW_HTML;
