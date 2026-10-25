@@ -54,7 +54,7 @@ export function hintFor(kind: OdooErrorKind, odooName?: string): string | undefi
 	switch (kind) {
 		case 'auth':
 			return odooName?.includes('SessionExpired')
-				? 'The session expired. Run "Odoo: Set Credentials" with a fresh session id, or use an API key.'
+				? 'The session expired. Reconnect with a fresh session id, or use an API key.'
 				: 'Check the login and credential. Users with two-factor authentication must use an API key instead of a password.';
 		case 'access':
 			return 'The Odoo user lacks access rights for this model or record.';

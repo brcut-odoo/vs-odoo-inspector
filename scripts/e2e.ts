@@ -21,6 +21,9 @@ const env = process.env;
 const connection = { name: 'it', url: env.ODOO_IT_URL!, db: env.ODOO_IT_DB!, login: env.ODOO_IT_LOGIN ?? 'admin', authMethod: 'apiKey' as const };
 const direct = new OdooClient({ connection, secret: env.ODOO_IT_API_KEY!, rateLimitPerSecond: 0 });
 
+/** What the stubbed connection prompt answers next. */
+let promptAnswer: 'connected' | 'declined' = 'connected';
+
 const store = new ApprovalStore();
 const broker = new ApprovalBroker(store);
 const gate = new ApprovalGate(broker, store, () => true);
@@ -35,6 +38,14 @@ const http = new McpHttpServer((sessionId) => {
 			await direct.connect();
 			return direct;
 		},
+		connect: async () => {
+			if (promptAnswer === 'declined') {
+				return { status: 'declined' };
+			}
+			await direct.connect();
+			return { status: 'connected', name: 'it', client: direct };
+		},
+		openConnections: () => [direct],
 		onAuthFailure: async () => false,
 		settings: () => ({ maxRows: 50, previewRows: 10, enableExecuteKw: true }),
 		log: (message) => console.log(`  [server] ${message}`),
@@ -86,6 +97,23 @@ async function main(): Promise<void> {
 	await step('app-only tools are marked for the app only', async () => {
 		for (const tool of tools.tools.filter((t) => t.name.startsWith('odoo_approval_'))) {
 			assert.deepEqual((tool._meta as { ui?: { visibility?: string[] } }).ui?.visibility, ['app'], tool.name);
+		}
+	});
+
+	await step('odoo_connect returns the connection name', async () => {
+		const result = await apps.callTool({ name: 'odoo_connect', arguments: { reason: 'e2e' } });
+		assert.ok(!result.isError);
+		assert.match(textOf(result), /Use connection "it"/);
+	});
+
+	await step('a declined connection is reported, not an error', async () => {
+		promptAnswer = 'declined';
+		try {
+			const result = await apps.callTool({ name: 'odoo_connect', arguments: {} });
+			assert.ok(!result.isError);
+			assert.match(textOf(result), /declined/);
+		} finally {
+			promptAnswer = 'connected';
 		}
 	});
 

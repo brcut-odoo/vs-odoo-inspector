@@ -1,223 +1,216 @@
 import * as vscode from 'vscode';
-import { CredentialStore, pickAuthKind } from '../auth/credentials';
 import { OdooClient } from '../odoo/client';
 import { OdooError } from '../odoo/errors';
 import { describeKind } from '../odoo/select';
-import { AuthKind, ConnectionConfig, ProtocolName } from '../odoo/types';
+import { ConnectionConfig } from '../odoo/types';
+import { ConnectHints, ConnectionDetails, promptConnection, promptSecret, RecentConnection, sameUrl } from './connectPrompt';
 
 const SECTION = 'odooInspector';
-
-export function getConnections(): ConnectionConfig[] {
-	return vscode.workspace.getConfiguration(SECTION).get<ConnectionConfig[]>('connections', []);
-}
+const RECENT_KEY = 'odooInspector.recentConnections';
+const MAX_RECENT = 10;
 
 export function getSetting<T>(key: string, fallback: T): T {
 	return vscode.workspace.getConfiguration(SECTION).get<T>(key, fallback);
 }
 
+export type ConnectResult =
+	| { status: 'connected'; name: string; client: OdooClient }
+	| { status: 'declined' }
+	| { status: 'failed'; error: unknown };
+
 /**
- * Owns the Odoo clients, one per connection, created on first use.
- *
- * The connection a tool uses is the one it names, else `activeConnection`,
- * else the only configured one.
+ * Owns the Odoo clients. Connections are ephemeral: each is opened when the
+ * model asks and the user agrees, belongs to one MCP session, and is dropped
+ * with it. Secrets live only in the clients; the history kept to pre-fill the
+ * prompt holds no secret.
  */
 export class ConnectionManager implements vscode.Disposable {
-	private readonly clients = new Map<string, Promise<OdooClient>>();
-	private readonly disposables: vscode.Disposable[] = [];
+	private readonly sessions = new Map<string, Map<string, OdooClient>>();
+	/** Prompts run one at a time, so two chats never interleave input boxes. */
+	private queue: Promise<unknown> = Promise.resolve();
 
 	constructor(
-		private readonly credentials: CredentialStore,
+		private readonly state: vscode.Memento,
 		private readonly log: (message: string) => void,
-	) {
-		this.disposables.push(
-			vscode.workspace.onDidChangeConfiguration((event) => {
-				if (event.affectsConfiguration(`${SECTION}.connections`) || event.affectsConfiguration(`${SECTION}.rateLimitPerSecond`)) {
-					this.clients.clear();
+	) {}
+
+	/** Asks the user to open a connection for this session. */
+	connect(sessionId: string, hints: ConnectHints, signal?: AbortSignal): Promise<ConnectResult> {
+		return this.serialized(() => this.promptAndConnect(sessionId, hints, signal));
+	}
+
+	private serialized<T>(task: () => Promise<T>): Promise<T> {
+		const run = this.queue.then(task, task);
+		this.queue = run.catch(() => undefined);
+		return run;
+	}
+
+	private async promptAndConnect(sessionId: string, hints: ConnectHints, signal?: AbortSignal): Promise<ConnectResult> {
+		const tokens = new vscode.CancellationTokenSource();
+		const onAbort = () => tokens.cancel();
+		signal?.addEventListener('abort', onAbort);
+		try {
+			let current = hints;
+			for (;;) {
+				const details = await promptConnection(current, this.recent(), tokens.token);
+				if (!details) {
+					this.log(`Session ${sessionId}: the user declined a connection${hints.reason ? ` (${hints.reason})` : ''}.`);
+					return { status: 'declined' };
 				}
-			}),
-		);
+				const client = new OdooClient({
+					connection: this.configFor(sessionId, details),
+					secret: details.secret,
+					rateLimitPerSecond: getSetting('rateLimitPerSecond', 1),
+				});
+				try {
+					await client.connect(signal);
+				} catch (error) {
+					if (signal?.aborted) {
+						throw error;
+					}
+					const message = error instanceof OdooError ? error.describe() : String(error);
+					this.log(`Session ${sessionId}: connecting to ${details.db} (${details.url}) failed: ${message}`);
+					const choice = await vscode.window.showErrorMessage(`Could not connect to ${details.db} on ${details.url}.`, { modal: true, detail: message }, 'Retry');
+					if (choice !== 'Retry') {
+						return { status: 'failed', error };
+					}
+					current = { ...hints, url: details.url, db: details.db, login: details.login };
+					continue;
+				}
+				const { connection } = client;
+				this.open(sessionId).set(connection.name, client);
+				await this.remember(details);
+				this.log(
+					`Session ${sessionId}: connected "${connection.name}" to ${connection.url} (db ${connection.db}) as ${connection.login} with ${describeKind(client.credential.kind)} over ${client.protocolName}.`,
+				);
+				return { status: 'connected', name: connection.name, client };
+			}
+		} finally {
+			signal?.removeEventListener('abort', onAbort);
+			tokens.dispose();
+		}
 	}
 
-	resolve(name?: string): ConnectionConfig {
-		const connections = getConnections();
-		if (connections.length === 0) {
-			throw new OdooError('No Odoo connection is configured.', 'auth', 'Ask the user to run "Odoo: Add Connection".');
+	/** Names a connection after its database, suffixed when the session already has one by that name. */
+	private configFor(sessionId: string, details: ConnectionDetails): ConnectionConfig {
+		const taken = this.open(sessionId);
+		let name = details.db;
+		for (let n = 2; taken.has(name); n++) {
+			name = `${details.db}-${n}`;
 		}
-		const wanted = name || getSetting('activeConnection', '') || (connections.length === 1 ? connections[0].name : '');
-		const found = connections.find((connection) => connection.name === wanted);
-		if (!found) {
-			throw new OdooError(
-				wanted ? `There is no Odoo connection named "${wanted}".` : 'Several Odoo connections exist and none is active.',
-				'validation',
-				`Pass "connection" as one of: ${connections.map((c) => c.name).join(', ')}.`,
-			);
-		}
-		return found;
+		const { url, db, login, authMethod, protocol } = details;
+		return { name, url, db, login, authMethod, protocol };
 	}
 
-	/** A connected client, prompting for credentials when none are stored. */
-	async client(name?: string): Promise<OdooClient> {
-		const connection = this.resolve(name);
-		let pending = this.clients.get(connection.name);
-		if (!pending) {
-			pending = this.open(connection);
-			this.clients.set(connection.name, pending);
-			pending.catch(() => this.clients.delete(connection.name));
+	private open(sessionId: string): Map<string, OdooClient> {
+		let open = this.sessions.get(sessionId);
+		if (!open) {
+			open = new Map();
+			this.sessions.set(sessionId, open);
 		}
-		return pending;
+		return open;
 	}
 
-	private async open(connection: ConnectionConfig): Promise<OdooClient> {
-		const preset = connection.authMethod && connection.authMethod !== 'auto' ? connection.authMethod : undefined;
-		const stored = (await this.credentials.get(connection.name)) ?? (await this.credentials.prompt(connection.name, connection.login, preset));
-		if (!stored) {
-			throw new OdooError(`No credentials for "${connection.name}".`, 'auth', 'Ask the user to run "Odoo: Set Credentials".');
+	/** The open clients of a session. */
+	clients(sessionId: string): OdooClient[] {
+		return [...(this.sessions.get(sessionId)?.values() ?? [])];
+	}
+
+	/** The client a tool uses: the one it names, else the session's only one. */
+	client(sessionId: string, name?: string): OdooClient {
+		const open = this.sessions.get(sessionId);
+		if (!open?.size) {
+			throw new OdooError('No Odoo connection is open in this chat.', 'validation', 'Call odoo_connect first; the user is asked for the connection details.');
 		}
-		const client = new OdooClient({
-			connection: { ...connection, authMethod: preset ?? stored.kind ?? 'auto' },
-			secret: stored.secret,
-			rateLimitPerSecond: getSetting('rateLimitPerSecond', 1),
-		});
-		await client.connect();
-		this.log(`Connected to ${connection.name} (${connection.url}, db ${connection.db}) as ${connection.login} with ${describeKind(client.credential.kind)} over ${client.protocolName}.`);
-		return client;
+		const names = [...open.keys()].join(', ');
+		if (name) {
+			const found = open.get(name);
+			if (!found) {
+				throw new OdooError(`There is no open Odoo connection named "${name}".`, 'validation', `Pass "connection" as one of: ${names}, or call odoo_connect.`);
+			}
+			return found;
+		}
+		if (open.size > 1) {
+			throw new OdooError('Several Odoo connections are open.', 'validation', `Pass "connection" as one of: ${names}.`);
+		}
+		return open.values().next().value!;
 	}
 
 	/**
-	 * Drops a client after an auth failure. A session token that expired cannot
-	 * be renewed silently, so the user is asked once for a fresh credential.
+	 * After an auth failure (typically an expired session token), asks once for
+	 * a fresh secret and replaces the client. True to retry.
 	 */
-	async handleAuthFailure(name: string | undefined, error: unknown): Promise<boolean> {
+	async handleAuthFailure(sessionId: string, name: string | undefined, error: unknown): Promise<boolean> {
 		if (!(error instanceof OdooError) || error.kind !== 'auth') {
 			return false;
 		}
-		const connection = this.resolve(name);
-		this.clients.delete(connection.name);
-		const choice = await vscode.window.showWarningMessage(
-			`Odoo rejected the credentials for "${connection.name}": ${error.message}`,
-			'Enter New Credentials',
-		);
-		if (choice !== 'Enter New Credentials') {
+		let stale: OdooClient;
+		try {
+			stale = this.client(sessionId, name);
+		} catch {
 			return false;
 		}
-		return Boolean(await this.credentials.prompt(connection.name, connection.login));
+		const { connection, credential } = stale;
+		return this.serialized(async () => {
+			const choice = await vscode.window.showWarningMessage(`Odoo rejected the credentials for "${connection.name}": ${error.message}`, 'Enter New Credentials');
+			if (choice !== 'Enter New Credentials') {
+				return false;
+			}
+			const secret = await promptSecret(credential.kind, connection.login, `${connection.db} (${connection.url})`);
+			if (!secret) {
+				return false;
+			}
+			this.open(sessionId).set(
+				connection.name,
+				new OdooClient({ connection: { ...connection, authMethod: credential.kind }, secret, rateLimitPerSecond: getSetting('rateLimitPerSecond', 1) }),
+			);
+			return true;
+		});
+	}
+
+	private recent(): RecentConnection[] {
+		return this.state.get<RecentConnection[]>(RECENT_KEY, []);
+	}
+
+	private async remember(details: ConnectionDetails): Promise<void> {
+		const { url, db, login, authMethod, protocol } = details;
+		const others = this.recent().filter((entry) => !(sameUrl(entry.url, url) && entry.db === db && entry.login === login));
+		await this.state.update(RECENT_KEY, [{ url, db, login, authMethod, protocol, lastUsed: Date.now() }, ...others].slice(0, MAX_RECENT));
+	}
+
+	async forgetHistory(): Promise<void> {
+		await this.state.update(RECENT_KEY, undefined);
+	}
+
+	closeSession(sessionId: string): void {
+		if (this.sessions.delete(sessionId)) {
+			this.log(`Session ${sessionId}: connections closed.`);
+		}
 	}
 
 	disconnect(): void {
-		this.clients.clear();
+		this.sessions.clear();
 	}
 
 	dispose(): void {
-		this.clients.clear();
-		for (const disposable of this.disposables) {
-			disposable.dispose();
-		}
-	}
-
-	/** "Odoo: Add Connection": URL → database → login → auth kind → secret → protocol. */
-	async addConnection(): Promise<void> {
-		const input = (title: string, prompt: string, value = '', validate?: (v: string) => string | undefined) =>
-			vscode.window.showInputBox({ title, prompt, value, ignoreFocusOut: true, validateInput: validate });
-
-		const url = await input('Add Odoo connection (1/5)', 'Server URL', 'https://', (v) => (/^https?:\/\/[^/]+/.test(v) ? undefined : 'Enter an http(s) URL'));
-		if (!url) {
-			return;
-		}
-		const db = await input('Add Odoo connection (2/5)', 'Database name', guessDb(url));
-		if (!db) {
-			return;
-		}
-		const login = await input('Add Odoo connection (3/5)', 'Login (usually an email address)');
-		if (!login) {
-			return;
-		}
-		const kind: AuthKind | undefined = await pickAuthKind();
-		if (!kind) {
-			return;
-		}
-		const protocol = await pickProtocol(kind);
-		if (!protocol) {
-			return;
-		}
-		const existing = getConnections();
-		const name = await input('Add Odoo connection (5/5)', 'A short name for this connection', db, (v) =>
-			!v.trim() ? 'Required' : existing.some((c) => c.name === v.trim()) ? 'That name is taken' : undefined,
-		);
-		if (!name) {
-			return;
-		}
-		const connection: ConnectionConfig = { name: name.trim(), url: url.replace(/\/+$/, ''), db, login, authMethod: kind, protocol };
-		const stored = await this.credentials.prompt(connection.name, login, kind);
-		if (!stored) {
-			return;
-		}
-		await vscode.workspace.getConfiguration(SECTION).update('connections', [...existing, connection], vscode.ConfigurationTarget.Global);
-		try {
-			const client = await this.client(connection.name);
-			void vscode.window.showInformationMessage(`Connected to ${connection.name} over ${client.protocolName}.`);
-		} catch (error) {
-			void vscode.window.showErrorMessage(error instanceof OdooError ? error.describe() : String(error));
-		}
-	}
-
-	async setCredentials(): Promise<void> {
-		const connection = await this.pick('Set credentials for');
-		if (!connection) {
-			return;
-		}
-		const preset = connection.authMethod && connection.authMethod !== 'auto' ? connection.authMethod : undefined;
-		if (await this.credentials.prompt(connection.name, connection.login, preset)) {
-			this.clients.delete(connection.name);
-			void vscode.window.showInformationMessage(`Credentials stored for ${connection.name}.`);
-		}
-	}
-
-	async connect(): Promise<void> {
-		const connection = await this.pick('Connect to');
-		if (!connection) {
-			return;
-		}
-		try {
-			const client = await this.client(connection.name);
-			void vscode.window.showInformationMessage(`Connected to ${connection.name} over ${client.protocolName}.`);
-		} catch (error) {
-			void vscode.window.showErrorMessage(error instanceof OdooError ? error.describe() : String(error));
-		}
-	}
-
-	private async pick(title: string): Promise<ConnectionConfig | undefined> {
-		const connections = getConnections();
-		if (connections.length === 0) {
-			void vscode.window.showWarningMessage('No Odoo connection is configured. Run "Odoo: Add Connection" first.');
-			return undefined;
-		}
-		if (connections.length === 1) {
-			return connections[0];
-		}
-		const picked = await vscode.window.showQuickPick(
-			connections.map((connection) => ({ label: connection.name, description: `${connection.login} @ ${connection.url} / ${connection.db}`, connection })),
-			{ title },
-		);
-		return picked?.connection;
+		this.sessions.clear();
 	}
 }
 
-function guessDb(url: string): string {
-	// `https://acme.odoo.com` usually hosts the database `acme`.
-	return /^https?:\/\/([^./]+)\.odoo\.com/.exec(url)?.[1] ?? '';
-}
-
-async function pickProtocol(kind: AuthKind): Promise<ProtocolName | 'auto' | undefined> {
-	const all: (vscode.QuickPickItem & { protocol: ProtocolName | 'auto'; accepts: AuthKind[] })[] = [
-		{ protocol: 'auto', label: 'Automatic', description: 'Recommended', detail: 'json2 for API keys on 18.5+, callKw for sessions, otherwise jsonrpc.', accepts: ['apiKey', 'password', 'session'] },
-		{ protocol: 'jsonrpc', label: 'External JSON-RPC (/jsonrpc)', detail: 'All versions; deprecated from Odoo 19.', accepts: ['apiKey', 'password'] },
-		{ protocol: 'xmlrpc', label: 'XML-RPC (/xmlrpc/2)', detail: 'All versions; deprecated from Odoo 19.', accepts: ['apiKey', 'password'] },
-		{ protocol: 'callKw', label: 'Web client (/web/dataset/call_kw)', detail: 'Session cookie; a password is exchanged for one.', accepts: ['password', 'session'] },
-		{ protocol: 'json2', label: 'JSON-2 (/json/2)', detail: 'Odoo 18.5+ with an API key.', accepts: ['apiKey'] },
-	];
-	const picked = await vscode.window.showQuickPick(
-		all.filter((item) => item.accepts.includes(kind)),
-		{ title: 'Add Odoo connection (4/5): protocol', ignoreFocusOut: true },
-	);
-	return picked?.protocol;
+/**
+ * Earlier versions kept connections in settings and secrets in the keychain.
+ * Deletes those secrets once; the settings entry is left for the user.
+ */
+export async function forgetLegacySecrets(context: vscode.ExtensionContext): Promise<void> {
+	const flag = 'odooInspector.legacySecretsCleared';
+	if (context.globalState.get<boolean>(flag)) {
+		return;
+	}
+	const legacy = vscode.workspace.getConfiguration(SECTION).get<{ name?: string }[]>('connections', []);
+	for (const { name } of Array.isArray(legacy) ? legacy : []) {
+		if (name) {
+			await context.secrets.delete(`odooInspector.secret.${name}`);
+		}
+	}
+	await context.globalState.update(flag, true);
 }

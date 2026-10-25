@@ -28,6 +28,7 @@ export class McpHttpServer {
 	constructor(
 		private readonly createMcpServer: (sessionId: string) => McpServer,
 		private readonly log: Logger,
+		private readonly onSessionClosed?: (sessionId: string) => void,
 	) {}
 
 	/** Starts listening on a random port and returns the endpoint URL. */
@@ -81,6 +82,7 @@ export class McpHttpServer {
 				},
 				onsessionclosed: (closed) => {
 					this.sessions.delete(closed);
+					this.onSessionClosed?.(closed);
 					this.log(`MCP session ${closed} closed`);
 				},
 			});
@@ -96,8 +98,9 @@ export class McpHttpServer {
 	}
 
 	async dispose(): Promise<void> {
-		for (const transport of this.sessions.values()) {
+		for (const [id, transport] of this.sessions) {
 			await transport.close().catch(() => undefined);
+			this.onSessionClosed?.(id);
 		}
 		this.sessions.clear();
 		await new Promise<void>((resolve) => (this.http ? this.http.close(() => resolve()) : resolve()));

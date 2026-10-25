@@ -2,12 +2,11 @@ import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/server';
 import { ApprovalBroker } from './approval/broker';
 import { ApprovalStore } from './approval/store';
-import { CredentialStore } from './auth/credentials';
 import { McpHttpServer } from './mcp/httpServer';
 import { registerMcpProvider } from './mcp/provider';
 import { ApprovalGate } from './tools/gate';
 import { registerOdooTools } from './tools/odooTools';
-import { ConnectionManager, getSetting } from './ui/connections';
+import { ConnectionManager, forgetLegacySecrets, getSetting } from './ui/connections';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	const output = vscode.window.createOutputChannel('Odoo Inspector', { log: true });
@@ -15,7 +14,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	const log = (message: string) => output.info(message);
 	const version: string = context.extension.packageJSON.version;
 
-	const connections = new ConnectionManager(new CredentialStore(context.secrets), log);
+	void forgetLegacySecrets(context).catch((error) => log(`Could not delete legacy secrets: ${error}`));
+	const connections = new ConnectionManager(context.globalState, log);
 	const store = new ApprovalStore();
 	const broker = new ApprovalBroker(store);
 	const gate = new ApprovalGate(broker, store, () => getSetting('approval.autoApproveKnownColumns', true));
@@ -27,8 +27,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			broker,
 			store,
 			gate,
-			client: (name) => connections.client(name),
-			onAuthFailure: (name, error) => connections.handleAuthFailure(name, error),
+			client: async (name) => connections.client(sessionId, name),
+			connect: (hints, signal) => connections.connect(sessionId, hints, signal),
+			openConnections: () => connections.clients(sessionId),
+			onAuthFailure: (name, error) => connections.handleAuthFailure(sessionId, name, error),
 			settings: () => ({
 				maxRows: getSetting('maxRows', 200),
 				previewRows: getSetting('approval.previewRows', 50),
@@ -37,7 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			log,
 		});
 		return server;
-	}, log);
+	}, log, (sessionId) => connections.closeSession(sessionId));
 	const url = await http.start();
 	log(`MCP server listening on ${url}`);
 
@@ -59,12 +61,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		store.onDidChange(refreshStatus),
 		registerMcpProvider(url, http.token, version),
 		{ dispose: () => void http.dispose() },
-		vscode.commands.registerCommand('odooInspector.addConnection', () => connections.addConnection()),
-		vscode.commands.registerCommand('odooInspector.setCredentials', () => connections.setCredentials()),
-		vscode.commands.registerCommand('odooInspector.connect', () => connections.connect()),
 		vscode.commands.registerCommand('odooInspector.disconnect', () => {
 			connections.disconnect();
-			void vscode.window.showInformationMessage('Disconnected from Odoo.');
+			void vscode.window.showInformationMessage('Closed every Odoo connection. The chat asks again when it needs one.');
+		}),
+		vscode.commands.registerCommand('odooInspector.forgetConnectionHistory', async () => {
+			await connections.forgetHistory();
+			void vscode.window.showInformationMessage('Forgot the recent Odoo connections.');
 		}),
 		vscode.commands.registerCommand('odooInspector.resetApprovals', () => {
 			store.reset();

@@ -33,11 +33,17 @@ Approvals are kept in memory per **MCP session**, and nothing is written to disk
 
 ## Setup
 
-1. **Odoo: Add Connection** asks for the URL, database, login, credential kind, protocol, a name, and then the secret.
-2. In Chat (agent mode), enable the **Odoo Inspector** MCP server in the tools picker.
-3. Ask something like *"Which 5 customers have the largest open invoices?"*
+There is nothing to configure ahead of time.
 
-Credentials are stored in the OS keychain (VS Code `SecretStorage`), never in settings.
+1. In Chat (agent mode), enable the **Odoo Inspector** MCP server in the tools picker.
+2. Ask something like *"Which 5 customers have the largest open invoices?"*
+3. The model calls `odoo_connect`, and VS Code asks whether to connect. Pick a recent connection, **New connection…**, or **Decline** (Escape declines too). The model is told you declined and won't ask again unless you do.
+
+A new connection asks for the server URL and then the database. The database list comes from the server (`/web/database/list`, falling back to `db.list`). If the server won't list its databases (`list_db = False`) or can't be reached, you type the name instead. After that come the login, the credential kind, the protocol and the secret.
+
+### Connection lifetime
+
+Connections are **ephemeral**. Each belongs to the chat's MCP session and is dropped when that session ends, the window reloads, or you run **Odoo: Disconnect**. Secrets are held in memory only, and never written to settings or the keychain. To pre-fill later prompts, the extension remembers the last 10 connections' URL, database, login, credential kind and protocol, but never the secret. A recent connection only asks for the secret. **Odoo: Forget Connection History** clears that list.
 
 ## Authentication and protocols
 
@@ -62,6 +68,8 @@ A combination that can't work fails at once with an explanation.
 
 | Tool | Gate |
 |---|---|
+| `odoo_connect` | the user fills in the connection details, or declines |
+| `odoo_list_connections` | none (lists this chat's open connections) |
 | `odoo_list_models`, `odoo_get_fields` | none (metadata only) |
 | `odoo_search_read`, `odoo_read`, `odoo_read_group` | column approval |
 | `odoo_execute_kw` | read methods: column approval. Everything else: always reviewed before sending. **Off** unless `odooInspector.enableExecuteKw` is set. |
@@ -73,8 +81,6 @@ When the model asks for no fields, a default set of up to 12 useful stored field
 
 | Setting | Default | |
 |---|---|---|
-| `odooInspector.connections` | `[]` | Managed by **Add Connection** |
-| `odooInspector.activeConnection` | `""` | Used when a tool names no connection |
 | `odooInspector.rateLimitPerSecond` | `1` | Odoo SaaS throttles hard; 0 disables |
 | `odooInspector.maxRows` | `200` | Most rows a read returns |
 | `odooInspector.approval.previewRows` | `50` | Rows shown in the approval table |

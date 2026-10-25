@@ -23,23 +23,13 @@
     ],
     "commands": [
       {
-        "command": "odooInspector.addConnection",
-        "title": "Add Connection",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooInspector.setCredentials",
-        "title": "Set Credentials",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooInspector.connect",
-        "title": "Connect",
-        "category": "Odoo"
-      },
-      {
         "command": "odooInspector.disconnect",
         "title": "Disconnect",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.forgetConnectionHistory",
+        "title": "Forget Connection History",
         "category": "Odoo"
       },
       {
@@ -61,66 +51,6 @@
     "configuration": {
       "title": "Odoo Inspector",
       "properties": {
-        "odooInspector.connections": {
-          "type": "array",
-          "default": [],
-          "markdownDescription": "Odoo databases the tools can use. Add one with **Odoo: Add Connection**. Credentials are kept in the OS keychain, never here.",
-          "items": {
-            "type": "object",
-            "required": [
-              "name",
-              "url",
-              "db",
-              "login"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Unique label, used as the tools' `connection` argument."
-              },
-              "url": {
-                "type": "string",
-                "description": "Base URL, e.g. https://mycompany.odoo.com or http://localhost:8069."
-              },
-              "db": {
-                "type": "string",
-                "description": "Database name."
-              },
-              "login": {
-                "type": "string",
-                "description": "Login of the user the credential belongs to."
-              },
-              "authMethod": {
-                "type": "string",
-                "enum": [
-                  "auto",
-                  "apiKey",
-                  "password",
-                  "session"
-                ],
-                "default": "auto",
-                "markdownDescription": "Credential kind. `auto` guesses from its shape (40 hex characters: API key; 42+ url-safe characters: session id; otherwise password)."
-              },
-              "protocol": {
-                "type": "string",
-                "enum": [
-                  "auto",
-                  "jsonrpc",
-                  "xmlrpc",
-                  "callKw",
-                  "json2"
-                ],
-                "default": "auto",
-                "markdownDescription": "RPC protocol. `auto`: `json2` for API keys on Odoo 18.5+, `callKw` for session tokens, `jsonrpc` otherwise. API keys cannot use `callKw`; session tokens can only use `callKw`; `json2` only takes API keys."
-              }
-            }
-          }
-        },
-        "odooInspector.activeConnection": {
-          "type": "string",
-          "default": "",
-          "description": "Connection used when a tool call names none."
-        },
         "odooInspector.rateLimitPerSecond": {
           "type": "number",
           "default": 1,

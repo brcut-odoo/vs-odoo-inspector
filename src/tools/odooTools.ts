@@ -9,6 +9,8 @@ import { OdooClient } from '../odoo/client';
 import { OdooError } from '../odoo/errors';
 import { FieldsGetResult, OdooRecord } from '../odoo/types';
 import { PreviewResponse, ResultSummary, SUMMARY_META, TOOL_DECIDE, TOOL_PREVIEW, TOOL_RESET, VIEW_URI } from '../view/protocol';
+import type { ConnectHints } from '../ui/connectPrompt';
+import type { ConnectResult } from '../ui/connections';
 import { ApprovalGate, approvalUiFor, CallContext, GateOutcome } from './gate';
 
 export interface ToolSettings {
@@ -25,6 +27,10 @@ export interface ToolDeps {
 	store: ApprovalStore;
 	gate: ApprovalGate;
 	client(connection?: string): Promise<OdooClient>;
+	/** Asks the user to open a connection; they may decline. */
+	connect(hints: ConnectHints, signal?: AbortSignal): Promise<ConnectResult>;
+	/** The connections open in this session. */
+	openConnections(): OdooClient[];
 	/** Asks for fresh credentials after an auth failure; true to retry. */
 	onAuthFailure(connection: string | undefined, error: unknown): Promise<boolean>;
 	settings(): ToolSettings;
@@ -44,7 +50,7 @@ const READ_METHODS = new Set([
 	'web_search_read', 'web_read', 'web_read_group', 'default_get', 'check_access_rights', 'has_access', 'get_views',
 ]);
 
-const connectionArg = z.string().optional().describe('Name of the Odoo connection. Omit to use the active one.');
+const connectionArg = z.string().optional().describe('Connection name returned by odoo_connect. Omit when only one connection is open.');
 const domainArg = z
 	.array(z.unknown())
 	.optional()
@@ -57,6 +63,63 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 	registerAppResource(server, 'Odoo approval', VIEW_URI, { description: 'Review the Odoo columns and values before they are shared.' }, async () => ({
 		contents: [{ uri: VIEW_URI, mimeType: RESOURCE_MIME_TYPE, text: approvalHtml }],
 	}));
+
+	// ------------------------------------------------------------ connections
+
+	server.registerTool(
+		'odoo_connect',
+		{
+			title: 'Connect to an Odoo database',
+			description:
+				'Opens a connection to an Odoo database; required before any other Odoo tool. The user is prompted for the server, ' +
+				'database and credentials, and may decline. The arguments only pre-fill the prompt. Returns the connection name to pass ' +
+				'as `connection`. Connections last for this chat; call odoo_list_connections first and reuse an open one rather than asking again.',
+			inputSchema: z.looseObject({
+				url: z.string().optional().describe('Suggested server URL, e.g. https://mycompany.odoo.com, if the user mentioned one.'),
+				db: z.string().optional().describe('Suggested database name, if the user mentioned one.'),
+				login: z.string().optional().describe('Suggested login, if the user mentioned one.'),
+				reason: z.string().optional().describe('Why you need the connection, in a few words; shown to the user.'),
+			}),
+		},
+		async (args, ctx) => {
+			let result: ConnectResult;
+			try {
+				result = await deps.connect({ url: args.url, db: args.db, login: args.login, reason: args.reason }, ctx.mcpReq.signal);
+			} catch (error) {
+				return failure(error);
+			}
+			switch (result.status) {
+				case 'declined':
+					return withSummary(text('The user declined to connect to Odoo. Do not retry unless the user asks.'), { outcome: 'denied' });
+				case 'failed':
+					return failure(result.error);
+				case 'connected': {
+					const { client, name } = result;
+					const { url, db, login } = client.connection;
+					const version = client.version.serverVersion ? `Odoo ${client.version.serverVersion}, ` : '';
+					return text(`Connected to database ${db} at ${url} as ${login} (${version}${client.protocolName}). Use connection "${name}".`);
+				}
+			}
+		},
+	);
+
+	server.registerTool(
+		'odoo_list_connections',
+		{
+			title: 'List open Odoo connections',
+			description: 'Lists the Odoo connections open in this chat. Reuse one of them instead of calling odoo_connect again.',
+			inputSchema: z.looseObject({}),
+			annotations: { readOnlyHint: true },
+		},
+		async () => {
+			const open = deps.openConnections();
+			return text(
+				open.length
+					? open.map(({ connection: c, protocolName }) => `${c.name}: database ${c.db} at ${c.url} as ${c.login} (${protocolName})`).join('\n')
+					: 'No Odoo connection is open. Call odoo_connect.',
+			);
+		},
+	);
 
 	// ------------------------------------------------------------ metadata
 
