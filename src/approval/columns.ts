@@ -104,3 +104,21 @@ export function project(rows: OdooRecord[], allowed: Iterable<string>): OdooReco
 	const keep = new Set([...allowed, ...ALWAYS_INCLUDED]);
 	return rows.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => keep.has(key))));
 }
+
+/**
+ * Reduces many2one values to their id. Odoo returns `[id, display_name]`
+ * (or `{id, display_name}` from `web_read`), but the name is another
+ * record's data the user never sees as its own column, so it is not shared.
+ */
+export function relationIds(rows: OdooRecord[], fields: FieldsGetResult): OdooRecord[] {
+	const idOf = (value: unknown): unknown => {
+		if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number') {
+			return value[0];
+		}
+		if (value !== null && typeof value === 'object' && !Array.isArray(value) && typeof (value as OdooRecord).id === 'number') {
+			return (value as OdooRecord).id;
+		}
+		return value;
+	};
+	return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, fields[key]?.type === 'many2one' ? idOf(value) : value])));
+}

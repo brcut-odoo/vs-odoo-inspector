@@ -3,7 +3,7 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@model
 import * as z from 'zod/v4';
 import approvalHtml from 'view:approval';
 import { ApprovalBroker, ApprovalRequest } from '../approval/broker';
-import { asRows, columnsOf, defaultFields, domainFields, groupbyFields, orderFields, project } from '../approval/columns';
+import { asRows, columnsOf, defaultFields, domainFields, groupbyFields, orderFields, project, relationIds } from '../approval/columns';
 import { ApprovalStore } from '../approval/store';
 import { OdooClient } from '../odoo/client';
 import { OdooError } from '../odoo/errors';
@@ -422,7 +422,7 @@ async function gatedRead(deps: ToolDeps, ui: ReturnType<typeof approvalUiFor>, a
 			const fields = await client.fieldsGet(spec.model).catch(() => ({}) as FieldsGetResult);
 			const raw = await spec.fetch(client, fields);
 			const tabular = asRows(raw);
-			const rows: OdooRecord[] = tabular ?? [{ result: raw }];
+			const rows: OdooRecord[] = tabular ? relationIds(tabular, fields) : [{ result: raw }];
 			const filterFields = [...new Set(spec.filterFields)];
 			const request: ApprovalRequest = {
 				sessionId: deps.sessionId,

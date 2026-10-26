@@ -306,10 +306,6 @@ function formatValue(value: unknown, type: string): string {
 	if (typeof value === 'boolean') {
 		return value ? 'True' : 'False';
 	}
-	// many2one: [id, display name]
-	if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string') {
-		return value[1];
-	}
 	if (Array.isArray(value)) {
 		return value.map((item) => (typeof item === 'object' ? JSON.stringify(item) : String(item))).join(', ');
 	}

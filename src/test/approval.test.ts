@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { asRows, columnsOf, domainFields, groupbyFields, orderFields, project } from '../approval/columns';
+import { asRows, columnsOf, domainFields, groupbyFields, orderFields, project, relationIds } from '../approval/columns';
 import { ApprovalStore } from '../approval/store';
 
 suite('columns', () => {
@@ -34,6 +34,14 @@ suite('columns', () => {
 
 	test('projects rows onto allowed columns, always keeping id', () => {
 		assert.deepEqual(project([{ id: 1, name: 'a', phone: '1' }], ['name']), [{ id: 1, name: 'a' }]);
+	});
+
+	test('reduces many2one values to their id', () => {
+		const fields = { partner_id: { type: 'many2one' }, user_id: { type: 'many2one' }, stage_id: { type: 'many2one' }, tag: { type: 'char' } };
+		assert.deepEqual(
+			relationIds([{ id: 1, partner_id: [7, 'Azure'], user_id: false, stage_id: { id: 3, display_name: 'New' }, tag: [1, 'x'] }], fields),
+			[{ id: 1, partner_id: 7, user_id: false, stage_id: 3, tag: [1, 'x'] }],
+		);
 	});
 });
 
