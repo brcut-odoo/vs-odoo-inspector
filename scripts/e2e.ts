@@ -85,7 +85,7 @@ async function step(name: string, body: () => Promise<void>): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const url = await http.start();
+	const { url } = await http.start();
 	const apps = await connect(url, APPS);
 	const tools = await apps.listTools();
 	const names = tools.tools.map((tool) => tool.name).sort();

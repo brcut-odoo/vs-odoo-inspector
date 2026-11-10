@@ -13,14 +13,18 @@ export interface Logger {
  *
  * Running in-process (rather than as a stdio child) is what lets tool calls
  * reach extension state: the approval store, SecretStorage and the Odoo
- * clients. Every request must carry the per-activation bearer token, so other
- * local processes cannot use the server even though it listens on a port.
+ * clients. Every request must carry the bearer token, so other local
+ * processes cannot use the server even though it listens on a port.
+ *
+ * The token and port are meant to be stable across activations: VS Code and
+ * the Copilot agent host cache the provided definition and the latter never
+ * re-resolves it, so a changing endpoint would leave them with a dead URL.
  *
  * Sessions are stateful: each `initialize` gets its own transport and
  * `McpServer`, built by `createServer(sessionId)`.
  */
 export class McpHttpServer {
-	readonly token = randomBytes(32).toString('hex');
+	readonly token: string;
 	private http?: Server;
 	private readonly sessions = new Map<string, NodeStreamableHTTPServerTransport>();
 	private readonly validateHost = localhostHostValidation();
@@ -29,17 +33,39 @@ export class McpHttpServer {
 		private readonly createMcpServer: (sessionId: string) => McpServer,
 		private readonly log: Logger,
 		private readonly onSessionClosed?: (sessionId: string) => void,
-	) {}
+		token?: string,
+	) {
+		this.token = token ?? randomBytes(32).toString('hex');
+	}
 
-	/** Starts listening on a random port and returns the endpoint URL. */
-	async start(): Promise<string> {
-		this.http = createServer((req, res) => void this.handle(req, res));
+	/**
+	 * Starts listening, preferring `preferredPort` so the endpoint survives
+	 * restarts, and falls back to a random port if that one is taken.
+	 */
+	async start(preferredPort = 0): Promise<{ url: string; port: number }> {
+		try {
+			await this.listen(preferredPort);
+		} catch (error) {
+			if (preferredPort === 0 || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
+				throw error;
+			}
+			this.log(`Port ${preferredPort} is in use, picking another one`);
+			await this.listen(0);
+		}
+		const { port } = this.http!.address() as AddressInfo;
+		return { url: `http://127.0.0.1:${port}/mcp`, port };
+	}
+
+	private async listen(port: number): Promise<void> {
+		const http = createServer((req, res) => void this.handle(req, res));
 		await new Promise<void>((resolve, reject) => {
-			this.http!.once('error', reject);
-			this.http!.listen(0, '127.0.0.1', () => resolve());
+			http.once('error', reject);
+			http.listen(port, '127.0.0.1', () => {
+				http.off('error', reject);
+				resolve();
+			});
 		});
-		const { port } = this.http.address() as AddressInfo;
-		return `http://127.0.0.1:${port}/mcp`;
+		this.http = http;
 	}
 
 	private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

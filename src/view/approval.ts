@@ -76,6 +76,11 @@ function textOf(content: unknown): string {
  * `fields_get`) when the view starts, so poll with a gentle backoff.
  */
 async function loadPreview(lookup: { args?: unknown; id?: string }): Promise<void> {
+	// The result can arrive before the input (auto-approval, a re-rendered old message).
+	// The cast keeps TypeScript from narrowing `phase` for the loop below, which `set` changes.
+	if ((phase as Phase).kind === 'done') {
+		return;
+	}
 	set({ kind: 'loading' });
 	const deadline = Date.now() + 120_000;
 	let delay = 250;

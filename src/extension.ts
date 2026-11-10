@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/server';
 import { ApprovalBroker } from './approval/broker';
@@ -7,6 +8,20 @@ import { registerMcpProvider } from './mcp/provider';
 import { ApprovalGate } from './tools/gate';
 import { registerOdooTools } from './tools/odooTools';
 import { ConnectionManager, forgetLegacySecrets, getSetting } from './ui/connections';
+
+const PORT_KEY = 'odooInspector.mcpPort';
+const TOKEN_KEY = 'odooInspector.mcpToken';
+
+/** Reuses the bearer token across activations so cached MCP definitions stay valid. */
+async function stableToken(context: vscode.ExtensionContext): Promise<string | undefined> {
+	const existing = await context.secrets.get(TOKEN_KEY);
+	if (existing) {
+		return existing;
+	}
+	const token = randomBytes(32).toString('hex');
+	await context.secrets.store(TOKEN_KEY, token);
+	return token;
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	const output = vscode.window.createOutputChannel('Odoo Inspector', { log: true });
@@ -20,6 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	const broker = new ApprovalBroker(store);
 	const gate = new ApprovalGate(broker, store, () => getSetting('approval.autoApproveKnownColumns', true));
 
+	const token = await stableToken(context);
 	const http = new McpHttpServer((sessionId) => {
 		const server = new McpServer({ name: 'odoo-inspector', version });
 		registerOdooTools(server, {
@@ -39,8 +55,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			log,
 		});
 		return server;
-	}, log, (sessionId) => connections.closeSession(sessionId));
-	const url = await http.start();
+	}, log, (sessionId) => connections.closeSession(sessionId), token);
+	const { url, port } = await http.start(context.globalState.get<number>(PORT_KEY));
+	await context.globalState.update(PORT_KEY, port);
 	log(`MCP server listening on ${url}`);
 
 	const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
