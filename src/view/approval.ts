@@ -28,13 +28,21 @@ type Phase =
 const root = document.getElementById('app')!;
 let phase: Phase = { kind: 'connecting' };
 let resetNote = '';
+/** The tool call already returned: the model gets the data from odoo_fetch_approved, which waits for the decision. */
+let deferredCall = false;
 
 const app = new App({ name: 'odoo-inspector-approval', version: '1' });
 
 app.ontoolinput = (params) => void loadPreview({ args: params.arguments ?? {} });
 app.ontoolresult = (params) => {
 	const summary = (params._meta as Record<string, unknown> | undefined)?.[SUMMARY_META] as ResultSummary | undefined;
-	if (summary) {
+	if (summary?.outcome === 'deferred' && summary.id) {
+		// The host rendered us only after the result: load the still-pending approval by id.
+		deferredCall = true;
+		if (phase.kind !== 'review') {
+			void loadPreview({ id: summary.id });
+		}
+	} else if (summary) {
 		set({ kind: 'done', summary });
 	} else if (phase.kind !== 'review') {
 		set({ kind: 'idle', message: params.isError ? 'The tool call failed.' : 'Finished.' });
@@ -102,8 +110,9 @@ async function loadPreview(lookup: { args?: unknown; id?: string }): Promise<voi
 			return;
 		}
 		if (response.status === 'none') {
-			// Auto-approved or already settled; the tool result will say which.
-			set({ kind: 'idle', message: 'No review needed.' });
+			// By id: a deferred approval that was answered or expired (e.g. a restored chat).
+			// By arguments: auto-approved or already settled; the tool result will say which.
+			set({ kind: 'idle', message: lookup.id ? 'This approval was already answered, or it expired.' : 'No review needed.' });
 			return;
 		}
 		await new Promise((resolve) => setTimeout(resolve, delay));
@@ -185,12 +194,15 @@ function summaryView(summary: ResultSummary): Node {
 				return el('div', { class: 'summary ok' }, el('p', {}, 'No records found, so there was nothing to approve.'));
 			}
 			const sent = summary.columns?.length ?? 0;
-			const line = `${summary.outcome === 'auto-approved' ? 'Auto-approved (all columns approved earlier)' : 'Approved'}: ${summary.rows ?? 0} row${summary.rows === 1 ? '' : 's'} × ${sent} column${sent === 1 ? '' : 's'} sent to the model.`;
+			const size = `${summary.rows ?? 0} row${summary.rows === 1 ? '' : 's'} × ${sent} column${sent === 1 ? '' : 's'}`;
+			const line = deferredCall
+				? `Approved: ${size}. The model receives them through odoo_fetch_approved.`
+				: `${summary.outcome === 'auto-approved' ? 'Auto-approved (all columns approved earlier)' : 'Approved'}: ${size} sent to the model.`;
 			return el(
 				'div',
 				{ class: 'summary ok' },
 				el('p', {}, line),
-				summary.columns?.length ? el('p', { class: 'muted' }, `Sent: ${summary.columns.join(', ')}`) : null,
+				summary.columns?.length ? el('p', { class: 'muted' }, `${deferredCall ? 'Approved' : 'Sent'}: ${summary.columns.join(', ')}`) : null,
 				summary.withheld?.length ? el('p', { class: 'muted' }, `Withheld: ${summary.withheld.join(', ')}`) : null,
 			);
 		}
@@ -200,6 +212,8 @@ function summaryView(summary: ResultSummary): Node {
 			return el('div', { class: 'summary bad' }, el('p', {}, 'The approval expired. Nothing was sent to the model.'));
 		case 'cancelled':
 			return el('div', { class: 'summary bad' }, el('p', {}, 'Cancelled. Nothing was sent to the model.'));
+		case 'deferred':
+			return el('div', { class: 'summary' }, el('p', {}, 'Loading the approval…'));
 		case 'error':
 			return el('div', { class: 'summary bad' }, el('p', {}, summary.message ?? 'The query failed.'));
 	}

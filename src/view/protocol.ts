@@ -27,7 +27,9 @@ export interface DecideArgs {
 }
 
 export interface ResultSummary {
-	outcome: 'approved' | 'auto-approved' | 'denied' | 'expired' | 'cancelled' | 'error';
+	outcome: 'approved' | 'auto-approved' | 'denied' | 'expired' | 'cancelled' | 'deferred' | 'error';
+	/** With `deferred`: the approval to load. */
+	id?: string;
 	rows?: number;
 	columns?: string[];
 	withheld?: string[];

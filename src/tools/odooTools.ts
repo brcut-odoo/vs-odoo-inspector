@@ -2,7 +2,7 @@ import { McpServer, ServerContext } from '@modelcontextprotocol/server';
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import * as z from 'zod/v4';
 import approvalHtml from 'view:approval';
-import { ApprovalBroker, ApprovalRequest } from '../approval/broker';
+import { APPROVAL_TTL_MS, ApprovalBroker, ApprovalRequest, Decision } from '../approval/broker';
 import { asRows, columnsOf, defaultFields, domainFields, groupbyFields, orderFields, project, relationIds } from '../approval/columns';
 import { ApprovalStore } from '../approval/store';
 import { OdooClient } from '../odoo/client';
@@ -11,7 +11,7 @@ import { FieldsGetResult, OdooRecord } from '../odoo/types';
 import { PreviewResponse, ResultSummary, SUMMARY_META, TOOL_DECIDE, TOOL_PREVIEW, TOOL_RESET, VIEW_URI } from '../view/protocol';
 import type { ConnectHints } from '../ui/connectPrompt';
 import type { ConnectResult } from '../ui/connections';
-import { ApprovalGate, approvalUiFor, CallContext, GateOutcome } from './gate';
+import { ApprovalGate, approvalUiFor, CallContext, GateOutcome, keepAlive } from './gate';
 
 export interface ToolSettings {
 	/** Most rows a read returns. */
@@ -58,6 +58,10 @@ const domainArg = z
 /** Registers the Odoo tools for one MCP session. */
 export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 	const ui = () => approvalUiFor(server.server.getClientCapabilities() as Parameters<typeof approvalUiFor>[0]);
+	server.server.oninitialized = () => {
+		const client = server.server.getClientVersion();
+		deps.log(`Session ${deps.sessionId}: client ${client?.name ?? '?'} ${client?.version ?? ''}, approvals via ${ui()}, capabilities ${JSON.stringify(server.server.getClientCapabilities() ?? {})}`);
+	};
 
 	registerAppResource(server, 'Odoo approval', VIEW_URI, { description: 'Review the Odoo columns and values before they are shared.' }, async () => ({
 		contents: [{ uri: VIEW_URI, mimeType: RESOURCE_MIME_TYPE, text: approvalHtml }],
@@ -94,9 +98,9 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 					return failure(result.error);
 				case 'connected': {
 					const { client, name } = result;
-					const { url, db, login } = client.connection;
+					// The database name and URL (which often contains it) stay out of the model's context.
 					const version = client.version.serverVersion ? `Odoo ${client.version.serverVersion}, ` : '';
-					return text(`Connected to database ${db} at ${url} as ${login} (${version}${client.protocolName}). Use connection "${name}".`);
+					return text(`Connected as ${client.connection.login} (${version}${client.protocolName}). Use connection "${name}".`);
 				}
 			}
 		},
@@ -114,7 +118,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			const open = deps.openConnections();
 			return text(
 				open.length
-					? open.map(({ connection: c, protocolName }) => `${c.name}: database ${c.db} at ${c.url} as ${c.login} (${protocolName})`).join('\n')
+					? open.map(({ connection: c, protocolName }) => `${c.name}: as ${c.login} (${protocolName})`).join('\n')
 					: 'No Odoo connection is open. Call odoo_connect.',
 			);
 		},
@@ -156,6 +160,40 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			}),
 	);
 
+	// ------------------------------------------------------------ deferred approvals
+
+	/** How to finish each deferred call once the user has decided, by approval id. */
+	const resumes: Resumes = new Map();
+
+	server.registerTool(
+		'odoo_fetch_approved',
+		{
+			title: 'Get an approved Odoo result',
+			description:
+				'Returns the result of an Odoo call that returned a fetch id because the user had to review it first. ' +
+				'Waits until the user approves or denies in the chat, then returns the approved result or the denial.',
+			inputSchema: z.object({ id: z.string().describe('The fetch id returned by the earlier call.') }),
+		},
+		async ({ id }, ctx) => {
+			const stopHeartbeat = keepAlive(callContext(ctx));
+			let decision: Decision | undefined;
+			try {
+				decision = await deps.broker.waitFor(deps.sessionId, id, ctx.mcpReq.signal);
+			} finally {
+				stopHeartbeat();
+			}
+			if (!decision && ctx.mcpReq.signal.aborted) {
+				return text('Cancelled while waiting; the approval is still open. Call odoo_fetch_approved again with the same fetch id to keep waiting.');
+			}
+			const resume = resumes.get(id);
+			resumes.delete(id);
+			if (!decision || !resume) {
+				return text('There is no open approval for this fetch id: it expired unanswered, was already fetched, or belongs to another chat. Nothing was shared. Run the original call again only if the user still wants it.');
+			}
+			return resume(decision);
+		},
+	);
+
 	// ------------------------------------------------------------ gated reads
 
 	const approvalNote =
@@ -184,7 +222,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			_meta: { ui: { resourceUri: VIEW_URI } },
 		},
 		async (args, ctx) =>
-			gatedRead(deps, ui(), args, ctx, {
+			gatedRead(deps, resumes, ui(), args, ctx, {
 				model: args.model,
 				method: 'search_read',
 				request: { domain: args.domain ?? [], fields: args.fields, order: args.order, limit: args.limit, offset: args.offset, context: args.context },
@@ -217,7 +255,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			_meta: { ui: { resourceUri: VIEW_URI } },
 		},
 		async (args, ctx) =>
-			gatedRead(deps, ui(), args, ctx, {
+			gatedRead(deps, resumes, ui(), args, ctx, {
 				model: args.model,
 				method: 'read',
 				request: { ids: args.ids, fields: args.fields },
@@ -245,7 +283,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			_meta: { ui: { resourceUri: VIEW_URI } },
 		},
 		async (args, ctx) =>
-			gatedRead(deps, ui(), args, ctx, {
+			gatedRead(deps, resumes, ui(), args, ctx, {
 				model: args.model,
 				method: 'read_group',
 				request: { domain: args.domain ?? [], groupby: args.groupby, aggregates: args.aggregates, orderby: args.orderby, limit: args.limit },
@@ -287,7 +325,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 			const callArgs = args.args ?? [];
 			const kwargs = args.kwargs ?? {};
 			if (READ_METHODS.has(args.method)) {
-				return gatedRead(deps, ui(), args, ctx, {
+				return gatedRead(deps, resumes, ui(), args, ctx, {
 					model: args.model,
 					method: args.method,
 					request: { args: callArgs, kwargs },
@@ -295,7 +333,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 					fetch: (client) => client.executeKw(args.model, args.method, callArgs, kwargs),
 				});
 			}
-			return gatedWrite(deps, ui(), args, ctx, args.model, args.method, callArgs, kwargs);
+			return gatedWrite(deps, resumes, ui(), args, ctx, args.model, args.method, callArgs, kwargs);
 		},
 	);
 
@@ -318,7 +356,9 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 				: args !== undefined && deps.broker.isLoading(deps.sessionId, args)
 					? { status: 'loading' }
 					: { status: 'none' };
-			if (response.status === 'none') {
+			if (response.status === 'pending') {
+				deps.log(`View loaded approval ${response.preview.id}`);
+			} else if (response.status === 'none') {
 				// Expected after an auto-approval; otherwise a sign the view got different arguments.
 				deps.log(`View found no pending approval for ${id ? `id ${id}` : `args ${JSON.stringify(args)}`}`);
 			}
@@ -400,6 +440,15 @@ function callContext(ctx: ServerContext): CallContext {
 	};
 }
 
+/** Finishes a deferred call from the user's decision, by approval id. */
+type Resumes = Map<string, (decision: Decision) => Promise<ToolResult>>;
+
+/** Kept until `odoo_fetch_approved` takes it; dropped a while after the approval itself expires. */
+function keepForFetch(resumes: Resumes, id: string, resume: (decision: Decision) => Promise<ToolResult>): void {
+	resumes.set(id, resume);
+	setTimeout(() => resumes.delete(id), 2 * APPROVAL_TTL_MS).unref?.();
+}
+
 interface ReadSpec {
 	model: string;
 	method: string;
@@ -412,7 +461,14 @@ interface ReadSpec {
  * Fetch, then ask, then return only what was approved. A non-tabular result
  * (a count, a list of ids) is reviewed as a single `result` column.
  */
-async function gatedRead(deps: ToolDeps, ui: ReturnType<typeof approvalUiFor>, args: Record<string, unknown> & { connection?: string }, ctx: ServerContext, spec: ReadSpec): Promise<ToolResult> {
+async function gatedRead(
+	deps: ToolDeps,
+	resumes: Resumes,
+	ui: ReturnType<typeof approvalUiFor>,
+	args: Record<string, unknown> & { connection?: string },
+	ctx: ServerContext,
+	spec: ReadSpec,
+): Promise<ToolResult> {
 	const endLoading = deps.broker.beginLoading(deps.sessionId, args);
 	try {
 		return await run(deps, args.connection, async (client) => {
@@ -441,23 +497,34 @@ async function gatedRead(deps: ToolDeps, ui: ReturnType<typeof approvalUiFor>, a
 			endLoading();
 			const outcome = await pending;
 			deps.log(`${spec.method} ${spec.model}: ${describeOutcome(outcome)}`);
-			if (!outcome.approved) {
-				return denial(outcome, ui);
+			// Shares the rows fetched above: after a deferral, exactly the ones the user reviewed.
+			const finish = (outcome: GateOutcome): ToolResult => {
+				if (!outcome.approved) {
+					return denial(outcome, ui);
+				}
+				const shared = project(rows, outcome.columns);
+				const body = tabular ? shared : shared[0]?.result;
+				const returned = outcome.columns.filter((name) => !filterFields.includes(name) || rows.some((row) => name in row));
+				const lines = [
+					tabular ? `${shared.length} ${spec.model} record(s). Columns: ${returned.join(', ') || 'id'}.` : `Result of ${spec.model}.${spec.method}:`,
+					outcome.withheld.length ? `Withheld by the user (do not request these again unless the user asks): ${outcome.withheld.join(', ')}.` : '',
+					tabular ? shared.map((row) => JSON.stringify(row)).join('\n') : JSON.stringify(body),
+				];
+				return withSummary(text(lines.filter(Boolean).join('\n')), {
+					outcome: outcome.auto ? 'auto-approved' : 'approved',
+					rows: shared.length,
+					columns: outcome.columns,
+					withheld: outcome.withheld,
+				});
+			};
+			if (outcome.reason === 'deferred' && outcome.fetchId) {
+				keepForFetch(resumes, outcome.fetchId, async (decision) => {
+					const resumed = { ...decision, auto: false };
+					deps.log(`${spec.method} ${spec.model} (fetched ${outcome.fetchId}): ${describeOutcome(resumed)}`);
+					return finish(resumed);
+				});
 			}
-			const shared = project(rows, outcome.columns);
-			const body = tabular ? shared : shared[0]?.result;
-			const returned = outcome.columns.filter((name) => !filterFields.includes(name) || rows.some((row) => name in row));
-			const lines = [
-				tabular ? `${shared.length} ${spec.model} record(s). Columns: ${returned.join(', ') || 'id'}.` : `Result of ${spec.model}.${spec.method}:`,
-				outcome.withheld.length ? `Withheld by the user (do not request these again unless the user asks): ${outcome.withheld.join(', ')}.` : '',
-				tabular ? shared.map((row) => JSON.stringify(row)).join('\n') : JSON.stringify(body),
-			];
-			return withSummary(text(lines.filter(Boolean).join('\n')), {
-				outcome: outcome.auto ? 'auto-approved' : 'approved',
-				rows: shared.length,
-				columns: outcome.columns,
-				withheld: outcome.withheld,
-			});
+			return finish(outcome);
 		});
 	} finally {
 		endLoading();
@@ -470,6 +537,7 @@ async function gatedRead(deps: ToolDeps, ui: ReturnType<typeof approvalUiFor>, a
  */
 async function gatedWrite(
 	deps: ToolDeps,
+	resumes: Resumes,
 	ui: ReturnType<typeof approvalUiFor>,
 	args: Record<string, unknown> & { connection?: string },
 	ctx: ServerContext,
@@ -505,17 +573,29 @@ async function gatedWrite(
 			endLoading();
 			const outcome = await pending;
 			deps.log(`${method} ${model}: ${describeOutcome(outcome)}`);
-			if (!outcome.approved) {
-				return denial(outcome, ui);
+			// Sends the call the user reviewed, minus the fields they removed.
+			const send = async (target: OdooClient, outcome: GateOutcome): Promise<ToolResult> => {
+				if (!outcome.approved) {
+					return denial(outcome, ui);
+				}
+				const result = await target.executeKw(model, method, shape.rebuild(outcome.columns), kwargs);
+				const note = outcome.withheld.length ? `The user removed these fields before sending: ${outcome.withheld.join(', ')}.\n` : '';
+				return withSummary(text(`${note}${model}.${method} returned: ${JSON.stringify(result)}`), {
+					outcome: 'approved',
+					rows: shape.rows.length,
+					columns: outcome.columns,
+					withheld: outcome.withheld,
+				});
+			};
+			if (outcome.reason === 'deferred' && outcome.fetchId) {
+				const connection = client.connection.name;
+				keepForFetch(resumes, outcome.fetchId, async (decision) => {
+					const resumed = { ...decision, auto: false };
+					deps.log(`${method} ${model} (fetched ${outcome.fetchId}): ${describeOutcome(resumed)}`);
+					return run(deps, connection, (target) => send(target, resumed));
+				});
 			}
-			const result = await client.executeKw(model, method, shape.rebuild(outcome.columns), kwargs);
-			const note = outcome.withheld.length ? `The user removed these fields before sending: ${outcome.withheld.join(', ')}.\n` : '';
-			return withSummary(text(`${note}${model}.${method} returned: ${JSON.stringify(result)}`), {
-				outcome: 'approved',
-				rows: shape.rows.length,
-				columns: outcome.columns,
-				withheld: outcome.withheld,
-			});
+			return send(client, outcome);
 		});
 	} finally {
 		endLoading();
@@ -568,6 +648,17 @@ function denial(outcome: GateOutcome, ui: ReturnType<typeof approvalUiFor>): Too
 				isError: true,
 			},
 			{ outcome: 'error', message: 'No approval UI available.' },
+		);
+	}
+	if (outcome.reason === 'deferred') {
+		// The host renders the view only after the result; see ApprovalGate.viaApp.
+		return withSummary(
+			text(
+				`Fetch id "${outcome.fetchId}": the user is reviewing this call in the table shown with it, and nothing has been shared or sent yet. ` +
+					'Call odoo_fetch_approved with this fetch id now; it waits for their answer and returns the result or the denial. Do not run this call again. ' +
+					'The user already sees the approval table, so do not tell them you are waiting or ask them to approve; just call odoo_fetch_approved.',
+			),
+			{ outcome: 'deferred', id: outcome.id },
 		);
 	}
 	const why = outcome.reason === 'expired' ? 'The approval request expired without an answer.' : outcome.reason === 'cancelled' ? 'The request was cancelled.' : 'The user denied this request.';

@@ -111,4 +111,177 @@ suite('ApprovalGate', () => {
 		assert.deepEqual([outcome.approved, outcome.auto, outcome.withheld], [true, true, []]);
 		assert.deepEqual(store.classify('s1', ApprovalStore.scope('prod', 'res.partner'), ['name']).undecided, ['name']);
 	});
+
+	const appContext = () => ({
+		signal: new AbortController().signal,
+		notify: async () => undefined,
+		elicitInput: async () => assert.fail('should not elicit'),
+	});
+
+	test('defers when no view asks within the wait, keeping the request for the view', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => true, 20);
+		const outcome = await gate.approve(request(), 'app', appContext());
+		assert.equal(outcome.reason, 'deferred');
+		assert.ok(outcome.id);
+		assert.equal(broker.preview('s1', { id: outcome.id })?.model, 'res.partner');
+		assert.equal(broker.decide('s1', outcome.id, true, ['name']), true);
+		// Decided: no longer pending for any view.
+		assert.equal(broker.preview('s1', { id: outcome.id }), undefined);
+	});
+
+	test('the decision on a deferred request is collected by id, once, in its own session', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 20);
+		const { id, fetchId } = await gate.approve(request(), 'app', appContext());
+		assert.equal(broker.collect('s1', fetchId!), 'pending');
+		assert.equal(broker.collect('s2', fetchId!), undefined);
+		broker.decide('s1', id!, true, ['name']);
+		assert.equal(broker.collect('s2', fetchId!), undefined);
+		const decision = broker.collect('s1', fetchId!);
+		assert.ok(decision && decision !== 'pending');
+		assert.deepEqual([decision.approved, decision.columns.sort(), decision.withheld], [true, ['id', 'name'], ['phone', 'email']]);
+		assert.equal(broker.collect('s1', fetchId!), undefined);
+	});
+
+	test('waitFor blocks until the user answers, then hands out the decision once', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 10);
+		const { id, fetchId } = await gate.approve(request(), 'app', appContext());
+		let settled = false;
+		const waiting = broker.waitFor('s1', fetchId!).then((decision) => ((settled = true), decision));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		broker.decide('s1', id!, true, ['name']);
+		const decision = await waiting;
+		assert.deepEqual([decision?.approved, decision?.columns.sort()], [true, ['id', 'name']]);
+		assert.equal(await broker.waitFor('s1', fetchId!), undefined);
+	});
+
+	test('waitFor gives up on abort and leaves the request open', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 10);
+		const { fetchId } = await gate.approve(request(), 'app', appContext());
+		const abort = new AbortController();
+		const waiting = broker.waitFor('s1', fetchId!, abort.signal);
+		abort.abort();
+		assert.equal(await waiting, undefined);
+		assert.equal(broker.collect('s1', fetchId!), 'pending');
+		assert.equal(await broker.waitFor('s2', fetchId!), undefined);
+	});
+
+	test('waitFor returns nothing when the request expires unanswered', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store, 40);
+		const gate = new ApprovalGate(broker, store, () => false, 10);
+		const { fetchId } = await gate.approve(request(), 'app', appContext());
+		assert.equal(await broker.waitFor('s1', fetchId!), undefined);
+	});
+
+	test('the fetch id the model gets cannot preview or decide; the approval id cannot fetch', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 10);
+		const { id, fetchId } = await gate.approve(request(), 'app', appContext());
+		assert.ok(id && fetchId && id !== fetchId);
+		assert.equal(broker.preview('s1', { id: fetchId }), undefined);
+		assert.equal(broker.decide('s1', fetchId, true, ['name', 'phone']), false);
+		assert.equal(broker.collect('s1', id), undefined);
+		assert.equal(await broker.waitFor('s1', id), undefined);
+		// Still pending for the view, which approves with the approval id.
+		assert.equal(broker.collect('s1', fetchId), 'pending');
+		broker.decide('s1', id, true, ['name']);
+		const decision = broker.collect('s1', fetchId);
+		assert.ok(decision && decision !== 'pending');
+		assert.deepEqual(decision.columns.sort(), ['id', 'name']);
+	});
+
+	test('a denial is collected too', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 20);
+		const { id, fetchId } = await gate.approve(request(), 'app', appContext());
+		broker.decide('s1', id!, false, []);
+		const decision = broker.collect('s1', fetchId!);
+		assert.ok(decision && decision !== 'pending');
+		assert.deepEqual([decision.approved, decision.reason], [false, 'denied']);
+	});
+
+	test('an unanswered deferred request expires and leaves nothing to collect', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store, 30);
+		const gate = new ApprovalGate(broker, store, () => false, 10);
+		const { id, fetchId } = await gate.approve(request(), 'app', appContext());
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(broker.preview('s1', { id }), undefined);
+		assert.equal(broker.collect('s1', fetchId!), undefined);
+	});
+
+	test('a lookup with nothing loading or pending does not mark a later identical call as viewed', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 20);
+		const req = request();
+		// e.g. a view rendered after an auto-approved result, or a restored chat
+		assert.equal(broker.preview('s1', { args: req.args }), undefined);
+		const outcome = await gate.approve(req, 'app', appContext());
+		assert.equal(outcome.reason, 'deferred');
+	});
+
+	test('a view showing up while a call fetches clears the late-view flag of its session', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 20);
+		assert.equal((await gate.approve(request(), 'app', appContext())).reason, 'deferred');
+		// Flagged now; this time the view polls while the call is still fetching.
+		const req = request({ args: { other: 1 } });
+		const endLoading = broker.beginLoading('s1', req.args);
+		broker.preview('s1', { args: req.args });
+		const pending = gate.approve(req, 'app', appContext());
+		endLoading();
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		broker.decide('s1', broker.preview('s1', { args: req.args })!.id, true, ['name']);
+		assert.equal((await pending).approved, true);
+		// Unflagged: the next call waits the full time again instead of deferring at once.
+		const start = Date.now();
+		assert.equal((await gate.approve(request({ args: { other: 2 } }), 'app', appContext())).reason, 'deferred');
+		assert.ok(Date.now() - start >= 15);
+	});
+
+	test('after one deferral, the session defers at once; other sessions still wait', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 200);
+		const elapsed = async (req: ApprovalRequest) => {
+			const start = Date.now();
+			const outcome = await gate.approve(req, 'app', appContext());
+			assert.equal(outcome.reason, 'deferred');
+			return Date.now() - start;
+		};
+		assert.ok((await elapsed(request())) >= 190);
+		assert.ok((await elapsed(request({ args: { other: 1 } }))) < 100);
+		assert.ok((await elapsed(request({ sessionId: 's2' }))) >= 190);
+		gate.forgetSession('s1');
+		assert.ok((await elapsed(request({ args: { other: 2 } }))) >= 190);
+	});
+
+	test('keeps waiting for a decision once a view has asked', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => true, 20);
+		const req = request();
+		const endLoading = broker.beginLoading('s1', req.args);
+		broker.preview('s1', { args: req.args }); // the view polls while the call is still fetching
+		const pending = gate.approve(req, 'app', appContext());
+		endLoading();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const id = broker.preview('s1', { args: req.args })!.id;
+		broker.decide('s1', id, true, ['name']);
+		const outcome = await pending;
+		assert.deepEqual([outcome.approved, outcome.columns.sort()], [true, ['id', 'name']]);
+	});
 });

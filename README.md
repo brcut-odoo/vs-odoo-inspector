@@ -24,6 +24,10 @@ The extension runs an MCP server inside VS Code. When a tool reads Odoo data, th
 
 Clients without MCP Apps but with elicitation get a form with one checkbox per column, with sample values in each description. Clients with neither get a refusal, because there's no way to ask you.
 
+Some hosts, such as Claude Desktop, support MCP Apps but only show the view after the tool call returns. If no view has loaded the request within 10 seconds, the call returns a fetch id instead of data. Later calls in the same chat return their fetch id right away instead of waiting 10 seconds again.
+
+The view then appears with that call, and the model calls `odoo_fetch_approved` with the fetch id. The fetch id differs from the id the view uses to approve, so the model can't use it to approve its own request. `odoo_fetch_approved` waits until you approve or deny in the view, then returns the result or your denial. A read returns the rows you reviewed, with only the approved columns, and isn't fetched from Odoo again. A write is sent exactly as you reviewed it, minus the fields you removed. Each approval can be fetched once. If the fetch is cancelled, the approval stays open and the model can fetch it again. An unanswered request expires after 10 minutes.
+
 ### "Lifetime of the chat"
 
 Approvals are kept in memory per **MCP session**, and nothing is written to disk. VS Code may share one MCP session across several chats, so in practice approvals can outlive a single chat until the MCP server restarts or the window reloads. To clear them:
@@ -40,6 +44,18 @@ There is nothing to configure ahead of time.
 3. The model calls `odoo_connect`, and VS Code asks whether to connect. Pick a recent connection, **New connection…**, or **Decline** (Escape declines too). The model is told you declined and won't ask again unless you do.
 
 A new connection asks for the server URL and then the database. The database list comes from the server (`/web/database/list`, falling back to `db.list`). If the server won't list its databases (`list_db = False`) or can't be reached, you type the name instead. After that come the login, the credential kind, the protocol and the secret.
+
+### Claude Desktop
+
+Run **Odoo: Add to Claude Desktop**, then quit and reopen Claude Desktop. The command adds an `odoo-inspector` entry to `claude_desktop_config.json` and leaves the rest of the file unchanged. If the file isn't valid JSON, the command leaves it alone and tells you why. The config file is in:
+
+- macOS: `~/Library/Application Support/Claude/`
+- Windows: `%APPDATA%\Claude\`
+- Linux (community builds): `~/.config/Claude/`
+
+Claude Desktop can't reach the server directly. It only launches local stdio servers from its config, and its custom connectors are called from Anthropic's servers, which can't reach `127.0.0.1`. So the entry runs [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) with `npx` to bridge stdio to the extension's HTTP endpoint. Node.js must be installed and on the PATH Claude Desktop sees.
+
+The bearer token isn't stored in Desktop's config. `mcp-remote` reads it from a `--header-file` in the extension's global storage, readable only by you (mode 0600). The server only answers while a VS Code window with this extension is open. If that window ends up on a different port, for example because another window already holds it, you're warned and can point Claude Desktop at it. The command refuses to run from a remote window (SSH, WSL, containers), because Desktop on your computer couldn't reach the server there.
 
 ### Connection lifetime
 
@@ -70,6 +86,7 @@ A combination that can't work fails at once with an explanation.
 |---|---|
 | `odoo_connect` | the user fills in the connection details, or declines |
 | `odoo_list_connections` | none (lists this chat's open connections) |
+| `odoo_fetch_approved` | waits for your answer in the view, then returns the approved result (hosts that show the view only after the call returns) |
 | `odoo_list_models`, `odoo_get_fields` | none (metadata only) |
 | `odoo_search_read`, `odoo_read`, `odoo_read_group` | column approval |
 | `odoo_execute_kw` | read methods: column approval. Everything else: always reviewed before sending. |

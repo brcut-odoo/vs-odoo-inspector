@@ -40,7 +40,11 @@ export interface Decision {
 	columns: string[];
 	/** Columns the user withheld. */
 	withheld: string[];
-	reason?: 'denied' | 'expired' | 'cancelled';
+	reason?: 'denied' | 'expired' | 'cancelled' | 'deferred';
+	/** With `deferred`: the approval id, for the view only (preview and decide). */
+	id?: string;
+	/** With `deferred`: the id the model fetches the result with; useless for preview or decide. */
+	fetchId?: string;
 }
 
 export interface ApprovalRequest {
@@ -68,6 +72,14 @@ interface Pending {
 	preview: Preview;
 	argsKey: string;
 	settled: boolean;
+	/** Its tool call already returned; the decision is kept for `odoo_fetch_approved`. */
+	deferred: boolean;
+	/** Set when deferred: the id given to the model. */
+	fetchId?: string;
+	/** A view has asked about it, so the host renders views while calls are pending. */
+	viewed: boolean;
+	/** Settles with the user's decision, or a denial on expiry or cancellation. */
+	decision: Promise<Decision>;
 	resolve(decision: Decision): void;
 	timer: ReturnType<typeof setTimeout>;
 }
@@ -82,7 +94,11 @@ export const APPROVAL_TTL_MS = 10 * 60_000;
 export class ApprovalBroker {
 	private readonly pending = new Map<string, Pending>();
 	/** Tool calls still fetching from Odoo, so the view knows to keep asking. */
-	private readonly loading = new Map<string, number>();
+	private readonly loading = new Map<string, { count: number; viewed: boolean }>();
+	/** Decisions on deferred requests, by fetch id, until the model collects them. */
+	private readonly decided = new Map<string, { sessionId: string; decision: Decision; expiresAt: number }>();
+	/** Fetch id → approval id, while a deferred request is pending. */
+	private readonly byFetchId = new Map<string, string>();
 
 	constructor(
 		private readonly store: ApprovalStore,
@@ -127,6 +143,9 @@ export class ApprovalBroker {
 			preview,
 			argsKey: stableKey(request.args),
 			settled: false,
+			deferred: false,
+			viewed: this.loading.get(`${request.sessionId}\u0000${stableKey(request.args)}`)?.viewed ?? false,
+			decision,
 			resolve: (value) => {
 				if (entry.settled) {
 					return;
@@ -146,17 +165,16 @@ export class ApprovalBroker {
 	/** Marks a call as fetching; call the returned function when done. */
 	beginLoading(sessionId: string, args: unknown): () => void {
 		const key = `${sessionId}\u0000${stableKey(args)}`;
-		this.loading.set(key, (this.loading.get(key) ?? 0) + 1);
+		const record = this.loading.get(key) ?? { count: 0, viewed: false };
+		record.count++;
+		this.loading.set(key, record);
 		let done = false;
 		return () => {
 			if (done) {
 				return;
 			}
 			done = true;
-			const count = (this.loading.get(key) ?? 1) - 1;
-			if (count > 0) {
-				this.loading.set(key, count);
-			} else {
+			if (--record.count <= 0) {
 				this.loading.delete(key);
 			}
 		};
@@ -171,7 +189,23 @@ export class ApprovalBroker {
 	 * was given (`tool-input`), or by id once the result names it.
 	 */
 	preview(sessionId: string, lookup: { id?: string; args?: unknown }): Preview | undefined {
-		return this.find(sessionId, lookup)?.preview;
+		const entry = this.find(sessionId, lookup);
+		// A view is rendered for this call. Polls while the call is still
+		// fetching count too; they carry over when the request is created.
+		if (entry) {
+			entry.viewed = true;
+		} else if (lookup.args !== undefined) {
+			const record = this.loading.get(`${sessionId}\u0000${stableKey(lookup.args)}`);
+			if (record) {
+				record.viewed = true;
+			}
+		}
+		return entry?.preview;
+	}
+
+	/** Whether a view has asked about this request (or its call, while fetching) yet. */
+	wasViewed(id: string): boolean {
+		return this.pending.get(id)?.viewed ?? false;
 	}
 
 	/** Applies the user's choice. Returns false when nothing was pending. */
@@ -206,11 +240,95 @@ export class ApprovalBroker {
 		if (entry) {
 			clearTimeout(entry.timer);
 			this.pending.delete(id);
+			if (entry.fetchId) {
+				this.byFetchId.delete(entry.fetchId);
+			}
 		}
 	}
 
+	/**
+	 * The tool call returns without a decision (the host only renders the
+	 * view after the result). The request stays pending for the view; once
+	 * decided, the decision waits for the model to collect it.
+	 *
+	 * Returns the fetch id the model gets. It differs from the approval id
+	 * the view uses, so knowing it is not enough to preview or decide: only
+	 * `waitFor` and `collect` accept it.
+	 */
+	defer(id: string): string | undefined {
+		const entry = this.pending.get(id);
+		if (!entry) {
+			return undefined;
+		}
+		entry.deferred = true;
+		entry.fetchId ??= randomUUID();
+		this.byFetchId.set(entry.fetchId, id);
+		return entry.fetchId;
+	}
+
+	/**
+	 * Waits for the user to answer a deferred request, then collects the
+	 * decision. Undefined when the fetch id is unknown, the request expired,
+	 * or `signal` aborted first (the request then stays pending for a later wait).
+	 */
+	async waitFor(sessionId: string, fetchId: string, signal?: AbortSignal): Promise<Decision | undefined> {
+		const entry = this.deferredEntry(sessionId, fetchId);
+		if (entry) {
+			const aborted = new Promise<void>((resolve) => {
+				if (signal?.aborted) {
+					resolve();
+				}
+				signal?.addEventListener('abort', () => resolve(), { once: true });
+			});
+			await Promise.race([entry.decision, aborted]);
+		}
+		const state = this.collect(sessionId, fetchId);
+		return state === 'pending' ? undefined : state;
+	}
+
+	/**
+	 * The state of a deferred request, by fetch id: still `pending`, or the
+	 * user's decision (handed out once), or undefined when unknown, expired
+	 * or already collected.
+	 */
+	collect(sessionId: string, fetchId: string): Decision | 'pending' | undefined {
+		if (this.deferredEntry(sessionId, fetchId)) {
+			return 'pending';
+		}
+		const kept = this.decided.get(fetchId);
+		if (!kept || kept.sessionId !== sessionId) {
+			return undefined;
+		}
+		this.decided.delete(fetchId);
+		return kept.expiresAt > Date.now() ? kept.decision : undefined;
+	}
+
+	/** The undecided deferred request a fetch id stands for, in this session. */
+	private deferredEntry(sessionId: string, fetchId: string): Pending | undefined {
+		const id = this.byFetchId.get(fetchId);
+		const entry = id === undefined ? undefined : this.pending.get(id);
+		return entry?.request.sessionId === sessionId && entry.deferred && !entry.settled ? entry : undefined;
+	}
+
 	private settle(id: string, decision: Decision): void {
-		this.pending.get(id)?.resolve(decision);
+		const entry = this.pending.get(id);
+		if (!entry || entry.settled) {
+			return;
+		}
+		entry.resolve(decision);
+		if (entry.deferred && entry.fetchId) {
+			// Nobody awaits it any more: keep a real answer for the model to collect, then forget the request.
+			if (decision.reason !== 'expired' && decision.reason !== 'cancelled') {
+				const now = Date.now();
+				for (const [key, kept] of this.decided) {
+					if (kept.expiresAt <= now) {
+						this.decided.delete(key);
+					}
+				}
+				this.decided.set(entry.fetchId, { sessionId: entry.request.sessionId, decision, expiresAt: now + this.ttlMs });
+			}
+			this.release(id);
+		}
 	}
 
 	private find(sessionId: string, lookup: { id?: string; args?: unknown }): Pending | undefined {

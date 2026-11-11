@@ -45,7 +45,7 @@ export class CallKwProtocol implements Protocol {
 		// A TOTP user gets a half-open session with `uid: null`.
 		if (!envelope?.result?.uid || !session) {
 			throw new OdooError(
-				`Odoo did not open a session for "${this.login}" on "${this.db}".`,
+				`Odoo did not open a session for "${this.login}".`,
 				'auth',
 				'Check the credential. Users with two-factor authentication need an API key or a session token.',
 			);

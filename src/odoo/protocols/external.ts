@@ -37,7 +37,7 @@ export class ExternalApiProtocol implements Protocol {
 		const uid = await this.service('common', 'authenticate', [this.db, this.login, this.credential.secret, {}], signal);
 		if (typeof uid !== 'number' || uid <= 0) {
 			throw new OdooError(
-				`Odoo rejected the ${this.credential.kind === 'apiKey' ? 'API key' : 'password'} for "${this.login}" on database "${this.db}".`,
+				`Odoo rejected the ${this.credential.kind === 'apiKey' ? 'API key' : 'password'} for "${this.login}".`,
 				'auth',
 				'Check the login, database name and credential. Users with two-factor authentication need an API key.',
 			);

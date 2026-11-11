@@ -2,7 +2,7 @@
   "name": "vs-odoo-inspector",
   "displayName": "VS Odoo Inspector",
   "description": "Query Odoo databases from chat, approving every column before it reaches the model.",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "publisher": "odoo",
   "license": "MIT",
   "engines": {
@@ -47,6 +47,11 @@
       {
         "command": "odooInspector.showOutput",
         "title": "Show Output",
+        "category": "Odoo"
+      },
+      {
+        "command": "odooInspector.addToClaudeDesktop",
+        "title": "Add to Claude Desktop",
         "category": "Odoo"
       }
     ],

@@ -91,12 +91,15 @@ export class ConnectionManager implements vscode.Disposable {
 		}
 	}
 
-	/** Names a connection after its database, suffixed when the session already has one by that name. */
+	/**
+	 * Gives a connection a neutral name (`odoo`, `odoo-2`, …). The model sees
+	 * this name, so it must not reveal the database.
+	 */
 	private configFor(sessionId: string, details: ConnectionDetails): ConnectionConfig {
 		const taken = this.open(sessionId);
-		let name = details.db;
+		let name = 'odoo';
 		for (let n = 2; taken.has(name); n++) {
-			name = `${details.db}-${n}`;
+			name = `odoo-${n}`;
 		}
 		const { url, db, login, authMethod, protocol } = details;
 		return { name, url, db, login, authMethod, protocol };

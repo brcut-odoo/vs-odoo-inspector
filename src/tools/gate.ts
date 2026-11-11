@@ -36,7 +36,16 @@ export class ApprovalGate {
 		private readonly broker: ApprovalBroker,
 		private readonly store: ApprovalStore,
 		private readonly autoApproveKnown: () => boolean,
+		private readonly viewWaitMs = 10_000,
 	) {}
+
+	/** Sessions whose host showed no view while a call was pending. */
+	private readonly lateViewSessions = new Set<string>();
+
+	/** Called when an MCP session closes. */
+	forgetSession(sessionId: string): void {
+		this.lateViewSessions.delete(sessionId);
+	}
 
 	async approve(request: ApprovalRequest, ui: ApprovalUi, context: CallContext): Promise<GateOutcome> {
 		// No records means no values to share; nothing is recorded, so the
@@ -63,31 +72,48 @@ export class ApprovalGate {
 	/**
 	 * Blocks the tool call until the view posts a decision. Progress
 	 * notifications keep the client from timing the call out meanwhile.
+	 *
+	 * Some hosts (Claude Desktop) advertise MCP Apps but only render the view
+	 * after the result. If no view has asked about the request after
+	 * `viewWaitMs`, return `deferred` and keep the request pending: the view
+	 * rendered from the result loads it by id, and the model collects the
+	 * decision with `odoo_fetch_approved`. Once a session has deferred, its
+	 * later calls defer at once, unless a view asked while the call was still
+	 * fetching; a view showing up during a pending call clears that again.
 	 */
 	private async viaApp(request: ApprovalRequest, context: CallContext): Promise<Decision> {
 		const { id, decision } = this.broker.create(request);
+		let deferred = false;
+		let deferTimer: ReturnType<typeof setTimeout> | undefined;
+		const noView = new Promise<Decision>((resolve) => {
+			deferTimer = setTimeout(
+				() => {
+					if (this.broker.wasViewed(id)) {
+						// This host does render views while calls are pending.
+						this.lateViewSessions.delete(request.sessionId);
+						return;
+					}
+					deferred = true;
+					this.lateViewSessions.add(request.sessionId);
+					const fetchId = this.broker.defer(id);
+					resolve({ approved: false, columns: [], withheld: [], reason: 'deferred', id, fetchId });
+				},
+				this.lateViewSessions.has(request.sessionId) ? 0 : this.viewWaitMs,
+			);
+		});
 		const onAbort = () => this.broker.cancel(id);
 		context.signal.addEventListener('abort', onAbort);
-		let ticks = 0;
-		const heartbeat =
-			context.progressToken === undefined
-				? undefined
-				: setInterval(() => {
-						void context
-							.notify({
-								method: 'notifications/progress',
-								params: { progressToken: context.progressToken, progress: ++ticks, message: 'Waiting for your approval in the chat…' },
-							})
-							.catch(() => undefined);
-					}, 10_000);
+		const stopHeartbeat = keepAlive(context);
 		try {
-			return await decision;
+			return await Promise.race([decision, noView]);
 		} finally {
-			if (heartbeat) {
-				clearInterval(heartbeat);
-			}
+			clearTimeout(deferTimer);
+			stopHeartbeat();
 			context.signal.removeEventListener('abort', onAbort);
-			this.broker.release(id);
+			// A deferred request stays pending for the view until it is decided or expires.
+			if (!deferred) {
+				this.broker.release(id);
+			}
 		}
 	}
 
@@ -131,6 +157,26 @@ export class ApprovalGate {
 		}
 		return { approved: true, columns: allowed, withheld };
 	}
+}
+
+/**
+ * Progress notifications every 10s while a call waits for the user, so the
+ * client doesn't time it out. Returns the function that stops them.
+ */
+export function keepAlive(context: Pick<CallContext, 'progressToken' | 'notify'>): () => void {
+	if (context.progressToken === undefined) {
+		return () => undefined;
+	}
+	let ticks = 0;
+	const timer = setInterval(() => {
+		void context
+			.notify({
+				method: 'notifications/progress',
+				params: { progressToken: context.progressToken, progress: ++ticks, message: 'Waiting for your approval in the chat…' },
+			})
+			.catch(() => undefined);
+	}, 10_000);
+	return () => clearInterval(timer);
 }
 
 function sample(value: unknown): string {

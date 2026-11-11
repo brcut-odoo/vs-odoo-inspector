@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/server';
 import { ApprovalBroker } from './approval/broker';
 import { ApprovalStore } from './approval/store';
+import { ClaudeDesktopRegistration } from './mcp/claudeDesktop';
 import { McpHttpServer } from './mcp/httpServer';
 import { registerMcpProvider } from './mcp/provider';
 import { ApprovalGate } from './tools/gate';
@@ -54,7 +55,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			log,
 		});
 		return server;
-	}, log, (sessionId) => connections.closeSession(sessionId), token);
+	}, log, (sessionId) => {
+		connections.closeSession(sessionId);
+		gate.forgetSession(sessionId);
+	}, token);
 	const { url, port } = await http.start(context.globalState.get<number>(PORT_KEY));
 	await context.globalState.update(PORT_KEY, port);
 	log(`MCP server listening on ${url}`);
@@ -70,6 +74,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		status.show();
 	};
 	refreshStatus();
+
+	const claudeDesktop = new ClaudeDesktopRegistration(context, url, http.token, log);
+	void claudeDesktop.refresh().catch((error) => log(`Could not refresh the Claude Desktop registration: ${error}`));
 
 	context.subscriptions.push(
 		connections,
@@ -91,6 +98,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		}),
 		vscode.commands.registerCommand('odooInspector.manageApprovals', () => manageApprovals(store)),
 		vscode.commands.registerCommand('odooInspector.showOutput', () => output.show()),
+		vscode.commands.registerCommand('odooInspector.addToClaudeDesktop', () => claudeDesktop.register()),
 	);
 }
 
