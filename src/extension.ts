@@ -50,7 +50,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			settings: () => ({
 				maxRows: getSetting('maxRows', 200),
 				previewRows: getSetting('approval.previewRows', 50),
-				enableExecuteKw: getSetting('enableExecuteKw', false),
 			}),
 			log,
 		});

@@ -72,7 +72,7 @@ A combination that can't work fails at once with an explanation.
 | `odoo_list_connections` | none (lists this chat's open connections) |
 | `odoo_list_models`, `odoo_get_fields` | none (metadata only) |
 | `odoo_search_read`, `odoo_read`, `odoo_read_group` | column approval |
-| `odoo_execute_kw` | read methods: column approval. Everything else: always reviewed before sending. **Off** unless `odooInspector.enableExecuteKw` is set. |
+| `odoo_execute_kw` | read methods: column approval. Everything else: always reviewed before sending. |
 | `odoo_approval_preview`, `odoo_approval_decide`, `odoo_approval_reset` | app-only: called by the approval view, hidden from the model |
 
 When the model asks for no fields, a default set of up to 12 useful stored fields is fetched. Binary, HTML and x2many fields are skipped.
@@ -85,8 +85,6 @@ When the model asks for no fields, a default set of up to 12 useful stored field
 | `odooInspector.maxRows` | `200` | Most rows a read returns |
 | `odooInspector.approval.previewRows` | `50` | Rows shown in the approval table |
 | `odooInspector.approval.autoApproveKnownColumns` | `true` | Skip the view when every column is already approved |
-| `odooInspector.enableExecuteKw` | `false` | Expose `odoo_execute_kw` |
-
 ## Development
 
 ```sh

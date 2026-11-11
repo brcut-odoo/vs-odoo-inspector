@@ -18,7 +18,6 @@ export interface ToolSettings {
 	maxRows: number;
 	/** Most rows shown in the approval view. */
 	previewRows: number;
-	enableExecuteKw: boolean;
 }
 
 export interface ToolDeps {
@@ -265,42 +264,40 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 
 	// ------------------------------------------------------------ execute_kw
 
-	if (deps.settings().enableExecuteKw) {
-		registerAppTool(
-			server,
-			'odoo_execute_kw',
-			{
-				title: 'Call any Odoo method',
-				description:
-					'Calls any public model method through execute_kw, including ones that change data (create, write, unlink, action_*). ' +
-					'Read methods run first and their result is reviewed like other reads. Every other call is shown to the user, ' +
-					'who can drop fields from create/write values or deny it, before anything is sent to Odoo. Prefer the dedicated read tools.',
-				inputSchema: z.looseObject({
-					model: z.string(),
-					method: z.string(),
-					args: z.array(z.unknown()).optional().describe('Positional arguments, e.g. [[ids], {values}] for write.'),
-					kwargs: z.record(z.string(), z.unknown()).optional(),
-					connection: connectionArg,
-				}),
-				annotations: { destructiveHint: true },
-				_meta: { ui: { resourceUri: VIEW_URI } },
-			},
-			async (args, ctx) => {
-				const callArgs = args.args ?? [];
-				const kwargs = args.kwargs ?? {};
-				if (READ_METHODS.has(args.method)) {
-					return gatedRead(deps, ui(), args, ctx, {
-						model: args.model,
-						method: args.method,
-						request: { args: callArgs, kwargs },
-						filterFields: domainFields(callArgs[0]),
-						fetch: (client) => client.executeKw(args.model, args.method, callArgs, kwargs),
-					});
-				}
-				return gatedWrite(deps, ui(), args, ctx, args.model, args.method, callArgs, kwargs);
-			},
-		);
-	}
+	registerAppTool(
+		server,
+		'odoo_execute_kw',
+		{
+			title: 'Call any Odoo method',
+			description:
+				'Calls any public model method through execute_kw, including ones that change data (create, write, unlink, action_*). ' +
+				'Read methods run first and their result is reviewed like other reads. Every other call is shown to the user, ' +
+				'who can drop fields from create/write values or deny it, before anything is sent to Odoo. Prefer the dedicated read tools.',
+			inputSchema: z.looseObject({
+				model: z.string(),
+				method: z.string(),
+				args: z.array(z.unknown()).optional().describe('Positional arguments, e.g. [[ids], {values}] for write.'),
+				kwargs: z.record(z.string(), z.unknown()).optional(),
+				connection: connectionArg,
+			}),
+			annotations: { destructiveHint: true },
+			_meta: { ui: { resourceUri: VIEW_URI } },
+		},
+		async (args, ctx) => {
+			const callArgs = args.args ?? [];
+			const kwargs = args.kwargs ?? {};
+			if (READ_METHODS.has(args.method)) {
+				return gatedRead(deps, ui(), args, ctx, {
+					model: args.model,
+					method: args.method,
+					request: { args: callArgs, kwargs },
+					filterFields: domainFields(callArgs[0]),
+					fetch: (client) => client.executeKw(args.model, args.method, callArgs, kwargs),
+				});
+			}
+			return gatedWrite(deps, ui(), args, ctx, args.model, args.method, callArgs, kwargs);
+		},
+	);
 
 	// ------------------------------------------------------------ app-only
 

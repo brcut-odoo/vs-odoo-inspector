@@ -2,7 +2,7 @@
   "name": "vs-odoo-inspector",
   "displayName": "VS Odoo Inspector",
   "description": "Query Odoo databases from chat, approving every column before it reaches the model.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "odoo",
   "license": "MIT",
   "engines": {
@@ -75,11 +75,6 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Skip the approval when every column of a read was already approved in this chat session (withheld columns are still removed). Writes are always reviewed."
-        },
-        "odooInspector.enableExecuteKw": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Expose `odoo_execute_kw`, which can call any method, including ones that change data. Every non-read call is reviewed before it is sent. Restart the MCP server after changing this."
         }
       }
     }
