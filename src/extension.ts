@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/server';
 import { ApprovalBroker } from './approval/broker';
 import { ApprovalStore } from './approval/store';
+import { ClaudeCodeRegistration } from './mcp/claudeCode';
 import { McpHttpServer } from './mcp/httpServer';
 import { registerMcpProvider } from './mcp/provider';
 import { ApprovalGate } from './tools/gate';
@@ -71,6 +72,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	};
 	refreshStatus();
 
+	const claudeCode = new ClaudeCodeRegistration(context, url, http.token, log);
+	void claudeCode.refresh().catch((error) => log(`Could not refresh the Claude Code registration: ${error}`));
+
 	context.subscriptions.push(
 		connections,
 		status,
@@ -91,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		}),
 		vscode.commands.registerCommand('odooInspector.manageApprovals', () => manageApprovals(store)),
 		vscode.commands.registerCommand('odooInspector.showOutput', () => output.show()),
+		vscode.commands.registerCommand('odooInspector.addToClaudeCode', () => claudeCode.register()),
 	);
 }
 

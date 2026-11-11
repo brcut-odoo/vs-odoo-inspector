@@ -41,6 +41,12 @@ There is nothing to configure ahead of time.
 
 A new connection asks for the server URL and then the database. The database list comes from the server (`/web/database/list`, falling back to `db.list`). If the server won't list its databases (`list_db = False`) or can't be reached, you type the name instead. After that come the login, the credential kind, the protocol and the secret.
 
+### Claude Code
+
+Claude Code does not pick up the server from VS Code automatically. Run **Odoo: Add to Claude Code** once. It adds a user-scope entry named `odoo-inspector` to `~/.claude.json` with `claude mcp add-json`. It uses the CLI bundled with the Claude Code extension, or `claude` on PATH. The bearer token is not stored in that file. Instead, the entry's `headersHelper` reads a headers file in the extension's global storage, readable only by you (mode 0600). The server only answers while a VS Code window with this extension is open. If that window ends up on a different port, for example because another window already holds it, you're warned and can point Claude Code at it.
+
+Claude Code in VS Code doesn't render MCP Apps, so approvals appear as an elicitation form with one checkbox per column, not as the table.
+
 ### Connection lifetime
 
 Connections are **ephemeral**. Each belongs to the chat's MCP session and is dropped when that session ends, the window reloads, or you run **Odoo: Disconnect**. Secrets are held in memory only, and never written to settings or the keychain. To pre-fill later prompts, the extension remembers the last 10 connections' URL, database, login, credential kind and protocol, but never the secret. A recent connection only asks for the secret. **Odoo: Forget Connection History** clears that list.
