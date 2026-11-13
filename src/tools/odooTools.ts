@@ -60,6 +60,7 @@ export function registerOdooTools(server: McpServer, deps: ToolDeps): void {
 	const ui = () => approvalUiFor(server.server.getClientCapabilities() as Parameters<typeof approvalUiFor>[0]);
 	server.server.oninitialized = () => {
 		const client = server.server.getClientVersion();
+		deps.gate.setClient(deps.sessionId, client?.name);
 		deps.log(`Session ${deps.sessionId}: client ${client?.name ?? '?'} ${client?.version ?? ''}, approvals via ${ui()}, capabilities ${JSON.stringify(server.server.getClientCapabilities() ?? {})}`);
 	};
 

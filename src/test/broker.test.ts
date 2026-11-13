@@ -232,7 +232,7 @@ suite('ApprovalGate', () => {
 		assert.equal(outcome.reason, 'deferred');
 	});
 
-	test('a view showing up while a call fetches clears the late-view flag of its session', async () => {
+	test('a view showing up while a call fetches makes its session block from then on', async () => {
 		const store = new ApprovalStore();
 		const broker = new ApprovalBroker(store);
 		const gate = new ApprovalGate(broker, store, () => false, 20);
@@ -246,10 +246,43 @@ suite('ApprovalGate', () => {
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		broker.decide('s1', broker.preview('s1', { args: req.args })!.id, true, ['name']);
 		assert.equal((await pending).approved, true);
-		// Unflagged: the next call waits the full time again instead of deferring at once.
-		const start = Date.now();
-		assert.equal((await gate.approve(request({ args: { other: 2 } }), 'app', appContext())).reason, 'deferred');
-		assert.ok(Date.now() - start >= 15);
+		// Known to render live now: the next call blocks even though no view asks.
+		assert.equal(await stillBlocking(gate, request({ args: { other: 2 } })), true);
+	});
+
+	/** Whether an unviewed call is still pending well past the wait; cancels it either way. */
+	const stillBlocking = async (gate: ApprovalGate, req: ApprovalRequest, waitMs = 60) => {
+		const abort = new AbortController();
+		const call = gate.approve(req, 'app', { ...appContext(), signal: abort.signal });
+		const result = await Promise.race([call.then(() => false), new Promise<true>((resolve) => setTimeout(() => resolve(true), waitMs))]);
+		abort.abort();
+		await call;
+		return result;
+	};
+
+	/** A call whose view asks while it is still fetching, then approves. */
+	const approveLive = async (broker: ApprovalBroker, gate: ApprovalGate, req: ApprovalRequest) => {
+		const endLoading = broker.beginLoading(req.sessionId, req.args);
+		broker.preview(req.sessionId, { args: req.args });
+		const pending = gate.approve(req, 'app', appContext());
+		endLoading();
+		broker.decide(req.sessionId, broker.preview(req.sessionId, { args: req.args })!.id, true, ['name']);
+		assert.equal((await pending).approved, true);
+	};
+
+	test('a client seen rendering views live is remembered across sessions', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const gate = new ApprovalGate(broker, store, () => false, 20);
+		gate.setClient('s1', 'Visual Studio Code');
+		await approveLive(broker, gate, request());
+		gate.forgetSession('s1');
+		// A new session of the same client, whose view fails to render: no deferral.
+		gate.setClient('s2', 'Visual Studio Code');
+		assert.equal(await stillBlocking(gate, request({ sessionId: 's2' })), true);
+		// Another client still defers.
+		gate.setClient('s3', 'claude-ai');
+		assert.equal((await gate.approve(request({ sessionId: 's3' }), 'app', appContext())).reason, 'deferred');
 	});
 
 	test('after one deferral, the session defers at once; other sessions still wait', async () => {

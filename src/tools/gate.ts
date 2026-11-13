@@ -42,9 +42,45 @@ export class ApprovalGate {
 	/** Sessions whose host showed no view while a call was pending. */
 	private readonly lateViewSessions = new Set<string>();
 
+	/**
+	 * Clients (by `clientInfo.name`) that have shown a view while a call was
+	 * pending. Kept across sessions (in memory, until the extension restarts),
+	 * so a view that fails to render once doesn't make the gate take that host
+	 * for a deferring one.
+	 */
+	private readonly liveViewClients = new Set<string>();
+	/** Sessions that have shown a view while a call was pending (covers clients without a name). */
+	private readonly liveViewSessions = new Set<string>();
+	private readonly clientNames = new Map<string, string>();
+
+	/** Called once a session's client has said who it is. */
+	setClient(sessionId: string, name: string | undefined): void {
+		if (name) {
+			this.clientNames.set(sessionId, name);
+		}
+	}
+
 	/** Called when an MCP session closes. */
 	forgetSession(sessionId: string): void {
 		this.lateViewSessions.delete(sessionId);
+		this.liveViewSessions.delete(sessionId);
+		this.clientNames.delete(sessionId);
+	}
+
+	/** Whether this session's host is known to render views while calls are pending. */
+	private rendersLive(sessionId: string): boolean {
+		const client = this.clientNames.get(sessionId);
+		return this.liveViewSessions.has(sessionId) || (client !== undefined && this.liveViewClients.has(client));
+	}
+
+	/** A view asked about a request while its call was pending. */
+	private learnRendersLive(sessionId: string): void {
+		this.lateViewSessions.delete(sessionId);
+		this.liveViewSessions.add(sessionId);
+		const client = this.clientNames.get(sessionId);
+		if (client !== undefined) {
+			this.liveViewClients.add(client);
+		}
 	}
 
 	async approve(request: ApprovalRequest, ui: ApprovalUi, context: CallContext): Promise<GateOutcome> {
@@ -80,17 +116,23 @@ export class ApprovalGate {
 	 * decision with `odoo_fetch_approved`. Once a session has deferred, its
 	 * later calls defer at once, unless a view asked while the call was still
 	 * fetching; a view showing up during a pending call clears that again.
+	 *
+	 * A host that has shown a view during a pending call (VS Code) never
+	 * defers again: its client is remembered, and its calls block until
+	 * decided, cancelled or expired, even when one view fails to render.
 	 */
 	private async viaApp(request: ApprovalRequest, context: CallContext): Promise<Decision> {
 		const { id, decision } = this.broker.create(request);
 		let deferred = false;
 		let deferTimer: ReturnType<typeof setTimeout> | undefined;
 		const noView = new Promise<Decision>((resolve) => {
+			if (this.rendersLive(request.sessionId)) {
+				return;
+			}
 			deferTimer = setTimeout(
 				() => {
 					if (this.broker.wasViewed(id)) {
-						// This host does render views while calls are pending.
-						this.lateViewSessions.delete(request.sessionId);
+						this.learnRendersLive(request.sessionId);
 						return;
 					}
 					deferred = true;
@@ -112,6 +154,9 @@ export class ApprovalGate {
 			context.signal.removeEventListener('abort', onAbort);
 			// A deferred request stays pending for the view until it is decided or expires.
 			if (!deferred) {
+				if (this.broker.wasViewed(id)) {
+					this.learnRendersLive(request.sessionId);
+				}
 				this.broker.release(id);
 			}
 		}
