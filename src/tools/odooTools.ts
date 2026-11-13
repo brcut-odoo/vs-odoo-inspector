@@ -481,6 +481,7 @@ async function gatedRead(
 			const request: ApprovalRequest = {
 				sessionId: deps.sessionId,
 				connection: client.connection.name,
+				database: client.connection.db,
 				model: spec.model,
 				method: spec.method,
 				args,
@@ -558,6 +559,7 @@ async function gatedWrite(
 			const request: ApprovalRequest = {
 				sessionId: deps.sessionId,
 				connection: client.connection.name,
+				database: client.connection.db,
 				model,
 				method,
 				args,

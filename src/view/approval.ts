@@ -231,7 +231,7 @@ function reviewView(state: Extract<Phase, { kind: 'review' }>): Node[] {
 	const header = el(
 		'div',
 		{ class: 'header' },
-		el('div', { class: 'title' }, el('strong', {}, `${verb} ${preview.model}`), el('span', { class: 'muted' }, ` · ${preview.connection}`)),
+		el('div', { class: 'title' }, el('strong', {}, `${verb} ${preview.model}`), el('span', { class: 'muted', title: `Connection "${preview.connection}"` }, ` · ${preview.database ?? preview.connection}`)),
 		requestLine(preview),
 		el(
 			'p',

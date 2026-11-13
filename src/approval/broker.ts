@@ -22,6 +22,8 @@ export interface PreviewColumn {
 export interface Preview {
 	id: string;
 	connection: string;
+	/** The real database name, for the user only: the model sees just `connection`. */
+	database?: string;
 	model: string;
 	method: string;
 	/** Arguments the call carried, e.g. domain, order, limit. */
@@ -50,6 +52,8 @@ export interface Decision {
 export interface ApprovalRequest {
 	sessionId: string;
 	connection: string;
+	/** Shown in the view, never to the model. */
+	database?: string;
 	model: string;
 	method: string;
 	/** The tool arguments; used to match the view's preview request. */
@@ -117,6 +121,7 @@ export class ApprovalBroker {
 		const preview: Preview = {
 			id,
 			connection: request.connection,
+			database: request.database,
 			model: request.model,
 			method: request.method,
 			request: request.request,
