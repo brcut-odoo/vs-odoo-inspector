@@ -1,4 +1,4 @@
-import { ApprovalBroker, ApprovalRequest, Decision } from '../approval/broker';
+import { ApprovalBroker, ApprovalRequest, Decision, rememberDecision } from '../approval/broker';
 import { ApprovalStore } from '../approval/store';
 
 interface BooleanField {
@@ -197,9 +197,7 @@ export class ApprovalGate {
 		}
 		const allowed = request.columns.filter((column) => locked.has(column) || result.content?.[column] === true);
 		const withheld = request.columns.filter((column) => !allowed.includes(column));
-		if (!request.write) {
-			this.store.record(request.sessionId, scope, allowed, withheld);
-		}
+		rememberDecision(this.store, request, allowed, withheld);
 		return { approved: true, columns: allowed, withheld };
 	}
 }

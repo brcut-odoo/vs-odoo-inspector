@@ -91,6 +91,21 @@ interface Pending {
 export const APPROVAL_TTL_MS = 10 * 60_000;
 
 /**
+ * Remembers a read's decision. Only columns whose values the user saw are
+ * remembered as approved: a filter-only column showed no values, so ticking
+ * it allows this call but must not auto-approve its values later. Withheld
+ * columns are remembered either way, since unticking is a deliberate choice.
+ */
+export function rememberDecision(store: ApprovalStore, request: ApprovalRequest, allowed: Iterable<string>, withheld: Iterable<string>): void {
+	if (request.write) {
+		return;
+	}
+	const returned = new Set(request.rows.flatMap((row) => Object.keys(row)));
+	const seen = [...allowed].filter((name) => returned.has(name));
+	store.record(request.sessionId, ApprovalStore.scope(request.connection, request.model), seen, withheld);
+}
+
+/**
  * Holds requests waiting for the user. The tool call creates one, the view
  * fetches its preview and posts the decision, and the tool call reads the
  * decision. Every lookup is scoped to the MCP session that created it.
@@ -223,13 +238,11 @@ export class ApprovalBroker {
 			this.settle(id, denied('denied'));
 			return true;
 		}
-		const { columns, write } = entry.request;
+		const { columns } = entry.request;
 		const locked = new Set([...ALWAYS_INCLUDED, ...(entry.request.locked ?? [])]);
 		const keep = new Set([...allowed.filter((name) => columns.includes(name)), ...columns.filter((name) => locked.has(name))]);
 		const withheld = columns.filter((name) => !keep.has(name));
-		if (!write) {
-			this.store.record(sessionId, ApprovalStore.scope(entry.request.connection, entry.request.model), keep, withheld);
-		}
+		rememberDecision(this.store, entry.request, keep, withheld);
 		this.settle(id, { approved: true, columns: [...keep], withheld });
 		return true;
 	}

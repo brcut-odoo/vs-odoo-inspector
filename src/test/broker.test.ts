@@ -54,8 +54,29 @@ suite('ApprovalBroker', () => {
 		const result = await decision;
 		assert.deepEqual(result, { approved: true, columns: ['name', 'email', 'id'], withheld: ['phone'] });
 		const known = store.classify('s1', ApprovalStore.scope('prod', 'res.partner'), ['name', 'phone', 'email']);
-		assert.deepEqual(known, { approved: ['name', 'email'], denied: ['phone'], undecided: [] });
+		// `email` was only filtered on: allowed for this call, but its values were never shown.
+		assert.deepEqual(known, { approved: ['name'], denied: ['phone'], undecided: ['email'] });
 		assert.equal(broker.decide('s1', id, true, ['phone']), false, 'a settled request cannot be decided again');
+	});
+
+	test('a withheld filter-only column is remembered as denied', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const { id, decision } = broker.create(request());
+		broker.decide('s1', id, true, ['name', 'phone']);
+		assert.deepEqual((await decision).withheld, ['email']);
+		assert.deepEqual(store.classify('s1', ApprovalStore.scope('prod', 'res.partner'), ['email']).denied, ['email']);
+	});
+
+	test('approving a filter-only column does not auto-approve a later read of its values', async () => {
+		const store = new ApprovalStore();
+		const broker = new ApprovalBroker(store);
+		const first = broker.create(request());
+		broker.decide('s1', first.id, true, ['name', 'phone', 'email']);
+		await first.decision;
+		const later = broker.create(request({ rows: [{ id: 1, name: 'A', phone: '111', email: 'a@acme.com' }], columns: ['id', 'name', 'phone', 'email'], filterFields: [] }));
+		const email = broker.preview('s1', { id: later.id })!.columns.find((c) => c.name === 'email')!;
+		assert.deepEqual([email.status, email.filterOnly], ['new', false]);
 	});
 
 	test('a later preview shows remembered statuses', () => {
